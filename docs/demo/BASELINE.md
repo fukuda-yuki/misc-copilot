@@ -46,7 +46,7 @@
 - `shared-legacy-app/BookCatalog.sln`
 - `shared-legacy-app/NuGet.Config`
 - `shared-legacy-app/global.json`
-- `shared-legacy-app/src/BookCatalog.Web/` 配下の全ファイル（22ファイル）
+- `shared-legacy-app/src/BookCatalog.Web/` 配下の全ファイル（20ファイル）
 - 上流ルートの `LICENSE`
 
 取り込みは最初の独立したコミットとして記録しています（コミットメッセージは「取込: 上流BookCatalog旧版を固定コミットから無改変で取り込む」）。

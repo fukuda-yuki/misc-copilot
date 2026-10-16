@@ -22,7 +22,7 @@
 - `shared-legacy-app/BookCatalog.sln`
 - `shared-legacy-app/NuGet.Config`
 - `shared-legacy-app/global.json`
-- `shared-legacy-app/src/BookCatalog.Web/` 配下の全ファイル（22ファイル。Views、Controllers、Models、Content、App_Start、Web.config、packages.config、Properties、Global.asax を含む）
+- `shared-legacy-app/src/BookCatalog.Web/` 配下の全ファイル（20ファイル。Views、Controllers、Models、Content、App_Start、Web.config、packages.config、Properties、Global.asax を含む）
 - 上流ルートの `LICENSE`
 
 取り込んだファイルは24件で、いずれも上流の blob SHA と一致することを確認しています

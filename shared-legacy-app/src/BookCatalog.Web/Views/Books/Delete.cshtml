@@ -1,0 +1,54 @@
+@model BookCatalog.Web.Models.Book
+
+@{
+    ViewBag.Title = "Delete Book";
+}
+
+<h2>&#9888; Delete Book</h2>
+
+<div class="error-box">
+    <strong>WARNING:</strong> Are you sure you want to permanently delete this book? This action cannot be undone!
+</div>
+
+<table class="detail-table" cellspacing="0" cellpadding="0" style="margin-top:8px;">
+    <tr>
+        <th>Title</th>
+        <td><strong>@Model.Title</strong></td>
+    </tr>
+    <tr>
+        <th>Author</th>
+        <td>@Model.Author</td>
+    </tr>
+    <tr>
+        <th>ISBN</th>
+        <td style="font-family:'Courier New',monospace; font-size:11px;">@Model.ISBN</td>
+    </tr>
+    <tr>
+        <th>Published Year</th>
+        <td>@Model.PublishedYear</td>
+    </tr>
+    <tr>
+        <th>Status</th>
+        <td>
+            @if (Model.IsActive)
+            {
+                <span class="badge-active">ACTIVE</span>
+            }
+            else
+            {
+                <span class="badge-inactive">inactive</span>
+            }
+        </td>
+    </tr>
+</table>
+
+@using (Html.BeginForm("Delete", "Books", FormMethod.Post))
+{
+    @Html.AntiForgeryToken()
+    @Html.HiddenFor(m => m.Id)
+    <p style="margin-top:10px;">
+        <input type="submit" value="[ YES - Delete This Book ]" style="background:#990000; color:#ffffff; border-top:2px solid #cc6666; border-left:2px solid #cc6666; border-bottom:2px solid #660000; border-right:2px solid #660000;" />
+        &nbsp;
+        <a href="@Url.Action("Index", "Books")" class="btn-classic">[ No - Cancel ]</a>
+    </p>
+}

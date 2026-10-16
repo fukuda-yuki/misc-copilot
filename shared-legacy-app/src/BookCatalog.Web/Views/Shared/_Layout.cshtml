@@ -1,0 +1,47 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="description" content="Book Catalog - Your Online Book Management Solution" />
+    <meta name="keywords" content="books, catalog, library, reading" />
+    <title>@ViewBag.Title - Book Catalog</title>
+    <link href="~/Content/Site.css?v=2" rel="stylesheet" type="text/css" />
+</head>
+<body>
+
+    <!-- *** HEADER *** -->
+    <div class="site-header">
+        <a href="@Url.Action("Index", "Books")" class="site-title">&#9733; Book Catalog &#9733;</a>
+        <span class="site-subtitle">:: Your Online Book Management Solution ::</span>
+    </div>
+
+    <!-- *** NAVIGATION *** -->
+    <div class="nav-bar">
+        <a href="@Url.Action("Index", "Books")">[Home]</a>
+        <a href="@Url.Action("Index", "Books")">[Books]</a>
+        <a href="@Url.Action("Create", "Books")">[Add New Book]</a>
+        <span class="nav-hint">Best viewed at 800x600 &bull; Internet Explorer 6.0+</span>
+    </div>
+
+    <!-- *** MAIN CONTENT *** -->
+    <div class="main-content">
+        @RenderBody()
+        <hr />
+    </div>
+
+    <!-- *** FOOTER *** -->
+    <div class="site-footer">
+        <div>
+            &copy; @DateTime.Now.Year Book Catalog Application &bull;
+            Powered by ASP.NET MVC 5 &amp; Entity Framework 6 &bull; .NET Framework 4.8
+        </div>
+        <div style="margin-top: 4px;">
+            You are visitor #&nbsp;<span class="hit-counter">001337</span>
+            &nbsp;&bull;&nbsp;
+            <span style="font-size:9px; color:#888888; font-style:italic;">Page generated in 0.042 seconds</span>
+        </div>
+    </div>
+
+    @RenderSection("scripts", required: false)
+</body>
+</html>

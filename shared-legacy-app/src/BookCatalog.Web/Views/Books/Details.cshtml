@@ -1,0 +1,49 @@
+@model BookCatalog.Web.Models.Book
+
+@{
+    ViewBag.Title = "Book Details";
+}
+
+<h2>&#128214; Book Details</h2>
+
+<table class="detail-table" cellspacing="0" cellpadding="0">
+    <tr>
+        <th>Title</th>
+        <td><strong>@Model.Title</strong></td>
+    </tr>
+    <tr>
+        <th>Author</th>
+        <td>@Model.Author</td>
+    </tr>
+    <tr>
+        <th>ISBN</th>
+        <td style="font-family:'Courier New',monospace; font-size:11px;">@Model.ISBN</td>
+    </tr>
+    <tr>
+        <th>Published Year</th>
+        <td>@Model.PublishedYear</td>
+    </tr>
+    <tr>
+        <th>Status</th>
+        <td>
+            @if (Model.IsActive)
+            {
+                <span class="badge-active">ACTIVE</span>
+            }
+            else
+            {
+                <span class="badge-inactive">inactive</span>
+            }
+        </td>
+    </tr>
+    <tr>
+        <th>Date Added</th>
+        <td>@Model.CreatedDate.ToString("MMMM dd, yyyy")</td>
+    </tr>
+</table>
+
+<p style="margin-top:10px;">
+    <a href="@Url.Action("Edit", "Books", new { id = Model.Id })" class="btn-classic btn-classic-yellow">[Edit]</a>
+    <a href="@Url.Action("Delete", "Books", new { id = Model.Id })" class="btn-classic btn-classic-red">[Delete]</a>
+    <a href="@Url.Action("Index", "Books")" class="btn-classic">[Back to List]</a>
+</p>

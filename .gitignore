@@ -1,0 +1,77 @@
+# .gitignore
+# 方針:
+#   - ビルド成果物、復元済みパッケージ、IDE固有の状態、ローカル設定、
+#     デモ用DBとSQLiteの付随ファイルは追跡しない。
+#   - DB初期化用のソースや、検証に必要なスクリプトは除外しない。
+#   - .github/upgrades/ 配下の Modernize レポートは、後で保存できるように除外しない。
+#   - .gitignore はAIからファイルを隠す仕組みではない。除外した理由をコメントに残す。
+
+# ---- .NET / MSBuild のビルド成果物 ----
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+*.dll
+*.exe
+*.pdb
+*.cache
+*.tlog
+*.binlog
+project.lock.json
+project.assets.json
+
+# ---- NuGet ----
+# 復元済みパッケージ（旧版の NuGet.Config は repositoryPath=packages）
+packages/
+*.nupkg
+*.snupkg
+# NuGet.Config はリポジトリの一部なので追跡する（除外しない）
+
+# ---- Visual Studio / VS Code / Rider ----
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+.vscode/
+.idea/
+*.DotSettings.user
+
+# ---- ローカル設定（追跡しない環境依存ファイル） ----
+*.local.json
+appsettings.Local.json
+appsettings.Development.local.json
+.local-env/
+secrets.json
+
+# ---- デモ用DBとSQLiteの付随ファイル ----
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+# 旧版のSQL Server LocalDB を実行した場合に App_Data へ作られる付随ファイル
+*.mdf
+*.ldf
+*.ndf
+
+# ---- OS ----
+Thumbs.db
+Desktop.ini
+
+# ---- 意図的に除外しないもの（参考） ----
+# .github/upgrades/    : Modernize 製品の実レポートを残す場所
+# docs/                : 公開要求・受入条件・検証記録
+# shared-legacy-app/   : 移行対象の旧版コードと設定

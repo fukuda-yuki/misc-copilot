@@ -3,9 +3,10 @@
 この文書は、**前の会話を引き継がない新しいAIセッション**に渡す指示書です。
 読む人は、この文書とリポジトリ内の公開要求・旧版コードだけを入力として作業してください。
 
-新しいセッションへ渡す短い指示（これだけを渡します）：
+依頼者が新しいセッションへ渡す短い指示：
 
 > このリポジトリの docs/demo/START-MODERNIZE.md を読み、記載された移行を実施してください。
+> 開始コミット：`<demo/start-v2 のコミットSHA>`
 
 準備担当の会話ログや、参考となる完成版は渡されません。この文書に書かれていないことで分からないことは、
 自分で調べて判断し、判断内容と根拠を記録してください。
@@ -24,17 +25,18 @@ Docker、SQL Server、LocalDB、Azure を使わず、ローカルで自由に操
 | 項目 | 値 |
 | --- | --- |
 | 対象リポジトリ | `fukuda-yuki/misc-copilot`（https://github.com/fukuda-yuki/misc-copilot） |
-| 開始ブランチ | `demo/00-legacy` |
-| 開始タグ | `demo/start-v1`（注釈付きタグ） |
-| 準備ブランチ（参考） | `feat/prepare-modernize-demo` |
+| 開始ブランチ | `demo/00-legacy-v2` |
+| 開始タグ | `demo/start-v2`（注釈付きタグ） |
+| 開始コミット | **依頼者から渡される短い指示に記載されたSHA**（この文書には書けない。下記参照） |
 | 対象ソリューション | `shared-legacy-app/BookCatalog.sln` |
 | 対象Webプロジェクト | `shared-legacy-app/src/BookCatalog.Web/BookCatalog.Web.csproj` |
 | 開始状態の説明 | `docs/demo/BASELINE.md` |
 | 公開受入条件 | `docs/demo/ACCEPTANCE.md` |
-| 共通の短い指示 | `AGENTS.md` |
+| 共通の短いルール | `AGENTS.md` |
 
-開始ブランチ `demo/00-legacy` と開始タグ `demo/start-v1` は**同じコミット**を指します。
-そのコミットが移行の開始地点です。**開始コミットのSHA**は、準備担当の引き継ぎ報告と準備PRの本文に記載されています。
+開始ブランチ `demo/00-legacy-v2` と開始タグ `demo/start-v2` は**同じコミット**を指します。
+そのコミットが移行の開始地点です。**開始コミットのSHAは、依頼者から渡される短い指示に記載されています。**
+準備担当の引き継ぎ報告や準備PRの本文を探しに行く必要はありません。
 
 開始地点は固定です。**開始ブランチを checkout して作業を続けたり、開始タグを新しいコミットへ動かしたりしないでください。**
 作業は自分で作る作業ブランチ（例：`feat/modernize-run01`）で行います。
@@ -42,21 +44,24 @@ Docker、SQL Server、LocalDB、Azure を使わず、ローカルで自由に操
 ### 開始地点の取得（初回の例）
 
 ```
-git clone --single-branch --branch demo/00-legacy --no-tags https://github.com/fukuda-yuki/misc-copilot.git misc-copilot-run01
+git clone --single-branch --branch demo/00-legacy-v2 --no-tags https://github.com/fukuda-yuki/misc-copilot.git misc-copilot-run01
 ```
 
 - これは**固定した開始ブランチだけ**を追跡する新しい作業フォルダを作ります。
-- clone した直後に `git rev-parse HEAD` を実行し、**引き継ぎ報告に記載された開始コミットと一致すること**を確認してください。
-- `--no-tags` を付けているため、開始タグは取得されません。開始タグが必要な場合は、報告されたSHAと照合してから使ってください。
+- clone した直後に `git rev-parse HEAD` を実行し、**短い指示に記載された開始コミットと一致すること**を確認してください。
+- `--no-tags` を付けているため、開始タグは取得されません。開始タグが必要な場合は、渡されたSHAと照合してから使ってください。
 - 実行IDは初回 `run01`、次は `run02` のように新しくします。
   実行ごとに**新しい作業フォルダ・新しいAIセッション・専用DB**を組み合わせます。
-- 過去runのブランチを fetch / checkout したり、全refsの履歴を読んだりしないでください。
+- **この開始地点より前の文書リビジョンは読まないでください。**
+  履歴には整理前の文書（移行前の事前分析を含む）が残っています。
+  `git log -p` や `git show <過去のコミット>:docs/demo/...` で過去の文書を読み直したり、
+  全refsの履歴を探索したりしないでください。**調査は、開始地点の作業ツリーから行います。**
 
 ## 3. 最初にやること
 
 1. `AGENTS.md`、`docs/demo/BASELINE.md`、`docs/demo/ACCEPTANCE.md` と、旧版コードを読む。
 2. 現在の `HEAD` が開始地点と一致し、他人の変更が無いことを確認する（`git status`、`git rev-parse HEAD`）。
-3. 利用可能な .NET SDK / ランタイムと、移行ツールの利用可否を**実測**する。
+3. この実行環境で利用可能な .NET SDK / ランタイムと、移行ツールの利用可否を**実測**する（第6節）。
 4. 初回は `run01` として、作業ブランチ `feat/modernize-run01` を作成する。
    同名が存在する場合は上書きせず、未使用のrun番号を選ぶ。
 5. 旧版を実行していない場合、Before の動作は**未確認**として記録する。
@@ -64,20 +69,20 @@ git clone --single-branch --branch demo/00-legacy --no-tags https://github.com/f
 
 ## 4. 参照範囲（守ること）
 
-- 上流の**完成済み実装、完成版向けテスト、既成の移行計画、実行済みレポート、過去run**を読まない。
-- 完成コードを取得してコピーしない。完成版をダウンロードして変更したものを「今回の移行結果」としない。
+禁止事項の正本は [AGENTS.md](../../AGENTS.md) の「参照してはいけないもの」です。要点だけ再掲します。
+
+- 上流の完成済み実装、完成版向けテスト、既成の移行計画、実行済みレポート、過去runのコードを参照・コピーしない。
 - 一般的な Microsoft Learn / .NET / EF Core / SQLite / GitHub の**公式資料による調査は許可**します。
   ただし、出典リンクを手掛かりに完成例を開くことは禁止です。
-- 上流リポジトリの他の章・他のディレクトリを取得しない。全体 clone / fork / mirror / 全体ZIP取得もしない。
-- 過去runのrefsを取得しない。`git fetch --all` や全refsの履歴探索をしない。
+- `git fetch --all` や全refsの履歴探索をしない。開始地点より前の文書リビジョンも読まない。
 - **受入条件を、実装に合わせて黙って弱めない。** 要求の矛盾を見つけたら根拠を示し、その部分だけ解決を求める。
 
 ## 5. 作業範囲
 
-- 既存の単一Webプロジェクト `shared-legacy-app/src/BookCatalog.Web/` を、**その場所で**移行する。
+作業範囲の正本は [AGENTS.md](../../AGENTS.md) の「作業範囲」です。移行の判断に関わる点を挙げます。
+
+- 既存の単一Webプロジェクト `shared-legacy-app/src/BookCatalog.Web/` を、**その場所で** .NET 10 / ASP.NET Core MVC へ移行する。
 - 画面・業務動作を維持し、必要な起動処理、設定、DBアクセス等を移行する。
-- 別の完成アプリを追加して旧版を放置する構成にはしない。
-- UI刷新、Blazor / SPA 化、マイクロサービス化、Azure 展開は行わない。
 - 旧レコードの移送はせず、**新規のSQLiteデモDB**を使う。
 - **安定版 .NET 10** を対象にし、実際に利用するSDKとパッケージの版を記録・固定する。
 - EF Core の SQLite provider と必要なEF関連ツールは、.NET 10 に対応する安定した**10系**で互換性のある組み合わせを使う。
@@ -91,23 +96,11 @@ git clone --single-branch --branch demo/00-legacy --no-tags https://github.com/f
   その場合は「**汎用AIによる移行**」と記録し、Modernize製品を使った結果やレポートを装わない。
 - ユーザーが特定の製品の使用を明示した場合は、その指定を優先する。
 
-### この準備環境で実測したツール環境（参考。実行環境で必ず再確認すること）
+### 実行環境の確認（必須）
 
-準備担当が 2026-10-17（日本時間）に実測した値です。**実行AIの環境は別なので、そのまま前提にしないでください。**
-
-- OS：Windows NT 10.0.26300.0（x64）
-- Git：2.54.0.windows.1
-- .NET SDK：10.0.401、8.0.426（`dotnet --list-sdks`）
-- .NET ランタイム：`Microsoft.NETCore.App` / `Microsoft.AspNetCore.App` の 8.0.31、8.0.32、10.0.12
-- Visual Studio：**Build Tools 2026（18.10.4）のみ**。フルIDEは未導入
-- MSBuild：`C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe`
-- .NET Framework 4.8 の参照アセンブリとランタイム（4.8.10008）は存在
-- IIS Express 10.0.26013.1000、SQL Server LocalDB の `MSSQLLocalDB` の存在は確認済み
-- GitHub CLI 2.100.0（`fukuda-yuki` としてログイン済み、`repo` スコープあり）
-- **Modernize製品の利用可否は未確認**：`modernize` はPATH上に無く、Visual StudioフルIDEも未導入、
-  VS Code拡張の一覧にも該当拡張は見当たらない。使えるかどうかは実行環境で再確認すること。
-- `dotnet workload list` はこの環境ではアクセス拒否の例外で失敗（ワークロード構成は未確認）
-- 旧版アプリのNuGet復元・ビルド・起動は、準備段階では**すべて未実施**
+作業開始時に、**今回の実行環境**で利用可能な .NET SDK・ランタイム・移行ツールを確認してください。
+**使用したツールとバージョンは、その実行の記録に残してください。**
+準備環境で実測した値はこの文書には記載していません（実行環境は別であり、前提にできないため）。
 
 ## 7. 進め方
 
@@ -176,8 +169,7 @@ git clone --single-branch --branch demo/00-legacy --no-tags https://github.com/f
 - 実際に利用したSDK / provider 等の**バージョン**。
 - 段階ごとの記録、固定ブランチ、確認結果。
 - 通常の権限で可能なら、作業ブランチと固定ブランチを push し、
-  移行開始地点に対応するブランチを base に Draft PR を作成する。
-  `main` への準備PRが未 merge なら `demo/00-legacy` 等を base にして、移行差分だけをレビューできるようにする。
+  `demo/00-legacy-v2` を base に Draft PR を作成して、**移行差分だけ**をレビューできるようにする。
 - `main` の自動 merge や force push は行わない。
 
 ## 11. 完了報告

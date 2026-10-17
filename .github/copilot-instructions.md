@@ -4,9 +4,9 @@
 `docs/demo/` の公開要求に従ってください。
 
 - 目的・作業範囲・参照禁止事項・記録の原則： [AGENTS.md](../AGENTS.md)
-- 開始地点の説明： [docs/demo/BASELINE.md](demo/BASELINE.md)
-- 公開受入条件： [docs/demo/ACCEPTANCE.md](demo/ACCEPTANCE.md)
-- 移行の進め方： [docs/demo/START-MODERNIZE.md](demo/START-MODERNIZE.md)
+- 開始地点の説明： [docs/demo/BASELINE.md](../docs/demo/BASELINE.md)
+- 公開受入条件： [docs/demo/ACCEPTANCE.md](../docs/demo/ACCEPTANCE.md)
+- 移行の進め方： [docs/demo/START-MODERNIZE.md](../docs/demo/START-MODERNIZE.md)
 
 要点だけを繰り返します。
 

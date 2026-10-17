@@ -4,8 +4,6 @@
 AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NETへ移行する過程を見せるデモです。
 書籍の一覧・詳細・追加・編集・削除を行うアプリを、.NET Framework 4.8 から .NET 10 + SQLite へ移行します。
 
-> 既存の内容（このリポジトリ名の見出し）はそのまま残しています。
-
 ## このリポジトリの目的
 
 - 移行前の教材（旧版コードと、公開された要求・受入条件）を、誰でも同じ条件で再現できる形で固定する。
@@ -16,7 +14,7 @@ AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NET
 
 | 段階 | 担当 | 内容 | 成果物 |
 | --- | --- | --- | --- |
-| 準備（この段階） | 準備担当AI | 旧版コードの取り込みと、要求・受入条件・実行手順の文書化 | `shared-legacy-app/` の旧版コード、`docs/demo/` の文書、開始ブランチと開始タグ |
+| 準備（完了） | 準備担当AI | 旧版コードの取り込みと、要求・受入条件・実行手順の文書化 | `shared-legacy-app/` の旧版コード、`docs/demo/` の文書、開始ブランチと開始タグ |
 | 移行（次の段階） | 実行AI（新しいセッション） | 旧版アプリを .NET 10 / ASP.NET Core MVC / EF Core SQLite へ移行し、動作を確認 | 移行後のアプリ、`RUNBOOK.md`、段階ごとの記録と検証結果 |
 
 準備段階では**移行の実装を始めません**。assessment（調査記録）、plan（計画）、.NET 10 の完成コードも、
@@ -25,7 +23,7 @@ AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NET
 ## 旧版（legacy）は「入力コード」です
 
 - `shared-legacy-app/` 配下のコードは、Microsoftが公開している教材から、**指定したコミットのまま無改変で**取り込んだ入力コードです。
-- 取り込んだだけであり、**動作確認済みではありません**。この準備段階では旧版アプリのビルドも起動も実施していません。
+- 取り込んだだけであり、**動作確認済みではありません**。準備段階では旧版アプリのビルドも起動も実施していません。
   （旧版はWindows / IIS Express / SQL Server LocalDB を前提とするため、起動しない選択をしています。）
 - 旧版にSQL Server向けの接続文字列や Entity Framework 6 のコードが含まれているのは、移行対象として正常です。
 - 旧版の取り込み元・範囲・無改変確認の結果は [docs/demo/BASELINE.md](docs/demo/BASELINE.md) と
@@ -47,25 +45,29 @@ AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NET
 
 ## 開始地点と、次のAIへの指示
 
-- 開始ブランチ：`demo/00-legacy`
-- 開始タグ：`demo/start-v1`（注釈付きタグ）
+- 開始ブランチ：`demo/00-legacy-v2`
+- 開始タグ：`demo/start-v2`（注釈付きタグ）
+- 開始コミット：`<demo/start-v2 のコミットSHA>`
 - 実行用の指示書：[docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md)
 
 新しいAIセッション（前の会話を引き継がないセッション）へは、次の短い指示だけを渡します。
 
 > このリポジトリの docs/demo/START-MODERNIZE.md を読み、記載された移行を実施してください。
+> 開始コミット：`<demo/start-v2 のコミットSHA>`
 
 開始地点は固定です。開始ブランチを checkout して直接作業を続けたり、
 開始タグを新しいコミットへ動かしたりしません。
+旧い開始地点（`demo/00-legacy` / `demo/start-v1`）は、文書を整理する前の状態として残しています。
 
 ## ドキュメント
 
 | ファイル | 内容 |
 | --- | --- |
-| [docs/demo/BASELINE.md](docs/demo/BASELINE.md) | 開始地点の説明。取り込み元コミット、無改変確認の方法と結果、旧版の技術と依存関係、実測した環境、未確認事項 |
-| [docs/demo/ACCEPTANCE.md](docs/demo/ACCEPTANCE.md) | 移行後の公開受入条件。旧版ソースから読み取った既存動作と、今回追加した要求を区別して記載 |
-| [docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md) | 新しい実行AI向けの指示書（移行の目的・範囲・進め方・記録・成果物） |
-| [AGENTS.md](AGENTS.md) | このリポジトリで作業するAI向けの短い共通指示 |
+| [docs/demo/BASELINE.md](docs/demo/BASELINE.md) | 開始地点の短い記録。開始ブランチ・タグ、取り込み元と範囲、無改変確認の結果、未確認事項 |
+| [docs/demo/ACCEPTANCE.md](docs/demo/ACCEPTANCE.md) | 移行後の公開受入条件（要求の正本）。26条件を機能とデータ保存のまとまりで記載 |
+| [docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md) | 新しい実行AI向けの指示書（開始地点・作業段階・ブランチ・記録・成果物） |
+| [AGENTS.md](AGENTS.md) | このリポジトリで作業するAIが共通して守る短いルール |
+| [.github/copilot-instructions.md](.github/copilot-instructions.md) | GitHub Copilot を使う場合の共通ルールと、実行指示への案内 |
 | [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) | 第三者コードの出典、固定コミット、取得日、ライセンスの場所 |
 
 ## このデモで行わないこと

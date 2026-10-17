@@ -47,13 +47,13 @@ AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NET
 
 - 開始ブランチ：`demo/00-legacy-v2`
 - 開始タグ：`demo/start-v2`（注釈付きタグ）
-- 開始コミット：`<demo/start-v2 のコミットSHA>`
+- 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`（`demo/00-legacy-v2` と `demo/start-v2` が指すコミット）
 - 実行用の指示書：[docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md)
 
 新しいAIセッション（前の会話を引き継がないセッション）へは、次の短い指示だけを渡します。
 
 > このリポジトリの docs/demo/START-MODERNIZE.md を読み、記載された移行を実施してください。
-> 開始コミット：`<demo/start-v2 のコミットSHA>`
+> 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`
 
 開始地点は固定です。開始ブランチを checkout して直接作業を続けたり、
 開始タグを新しいコミットへ動かしたりしません。

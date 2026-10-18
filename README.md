@@ -1,129 +1,103 @@
-# misc-copilot
+# misc-copilot — BookCatalog モダナイゼーション学習サンドボックス
 
-このリポジトリは、小さな書籍管理Webアプリ **BookCatalog** を題材にして、
-AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NETへ移行する過程を見せるデモです。
-書籍の一覧・詳細・追加・編集・削除を行うアプリを、.NET Framework 4.8 から .NET 10 + SQLite へ移行します。
+古い .NET の業務Webアプリを、現在の .NET とローカルのデータベースへ移行する進め方を、
+実際のコードを題材にして手を動かしながら学ぶためのリポジトリです。
 
-## このリポジトリの目的
+題材は、書籍の一覧・詳細・追加・編集・削除を行う小さなWebアプリ **BookCatalog** です。
+旧版は .NET Framework 4.8 / ASP.NET MVC 5 / Entity Framework 6 / SQL Server LocalDB で書かれており、
+これを **.NET 10 / ASP.NET Core MVC / Entity Framework Core / ローカルSQLite** へ移行します。
 
-- 移行前の教材（旧版コードと、公開された要求・受入条件）を、誰でも同じ条件で再現できる形で固定する。
-- その固定した開始地点から、別のAIセッションが .NET 10 への移行と SQLite 対応を実施する。
-- 調査・計画・実装・動作確認の各時点を、Gitのブランチとタグで後から見られるようにする。
+## 学べること
 
-## 2つの段階があること
+- 移行の進め方：現状の把握 → 調査 → 計画 → 移行 → 受入確認。
+- 旧版と現行の違い：非SDK形式のプロジェクト、`packages.config`、`Global.asax`、`System.Web`、
+  Entity Framework 6、SQL Server LocalDB。
+- 「動いた」と言うための確かめ方：受入条件、境界値、プロセスの再起動後もデータが残ること、記録の残し方。
 
-| 段階 | 担当 | 内容 | 成果物 |
-| --- | --- | --- | --- |
-| 準備（完了） | 準備担当AI | 旧版コードの取り込みと、要求・受入条件・実行手順の文書化 | `shared-legacy-app/` の旧版コード、`docs/demo/` の文書、開始ブランチと開始タグ |
-| 移行（次の段階） | 実行AI（新しいセッション） | 旧版アプリを .NET 10 / ASP.NET Core MVC / EF Core SQLite へ移行し、動作を確認 | 移行後のアプリ、`RUNBOOK.md`、段階ごとの記録と検証結果 |
+## 対象読者と前提
 
-準備段階では**移行の実装を始めません**。assessment（調査記録）、plan（計画）、.NET 10 の完成コードも、
-準備段階では作りません。理由は、公開する「要求」と、AIが後で考える「解決方法」を分けるためです。
+- C# と ASP.NET MVC の基本（コントローラ・ビュー・モデル）を読める方。
+- 次のツールを使います。
 
-## 旧版（legacy）は「入力コード」です
+  | ツール | 確認コマンド | 目安 |
+  | --- | --- | --- |
+  | Git | `git --version` | 最近のバージョン |
+  | .NET SDK | `dotnet --list-sdks` | .NET 10 のSDK |
 
-- `shared-legacy-app/` 配下のコードは、Microsoftが公開している教材から、**指定したコミットのまま無改変で**取り込んだ入力コードです。
-- 取り込んだだけであり、**動作確認済みではありません**。準備段階では旧版アプリのビルドも起動も実施していません。
-  （旧版はWindows / IIS Express / SQL Server LocalDB を前提とするため、起動しない選択をしています。）
-- 旧版にSQL Server向けの接続文字列や Entity Framework 6 のコードが含まれているのは、移行対象として正常です。
-- 旧版の取り込み元・範囲・無改変確認の結果は [docs/demo/BASELINE.md](docs/demo/BASELINE.md) と
-  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) に記録しています。
+- 移行後のデータはローカルのSQLiteファイルへ保存するため、データベースサーバーは用意しません。
+- Windows / macOS / Linux のいずれでも進められます。
 
-## 完成時の要求（要約）
+## 題材アプリ（旧版 BookCatalog）
 
-完成したアプリは次の状態で動くことを目指します。細かな受入条件は
-[docs/demo/ACCEPTANCE.md](docs/demo/ACCEPTANCE.md) に定義しています。
-
-- C# / .NET 10（`TargetFramework` は `net10.0`）。
-- ASP.NET Core MVC のWebアプリ。
-- Entity Framework Core の SQLite provider を使い、データはローカルのSQLiteファイルへ保存する。
-- 書籍管理の画面（一覧・詳細・追加・編集・削除）と主要な動作を保つ。
-- ローカルで起動し、自由に追加・編集・削除できる。
-
-**使わないもの**：Docker、コンテナー、SQL Server、SQL Server LocalDB、Azure。
-インメモリDBだけで動かして完成とはしません。
-
-## 開始地点
-
-| 項目 | 値 |
+| 画面 | 内容 |
 | --- | --- |
-| 開始ブランチ | `demo/00-legacy-v2` |
-| 開始タグ | `demo/start-v2`（注釈付きタグ） |
-| 開始コミット | `cb90026f0a7692241544ea7c106cec5327ade630`（ブランチとタグが指すコミット） |
-| 実行用の指示書 | [docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md) |
+| 一覧 | Active な書籍だけを Title の昇順で表示する |
+| 詳細 | 1件の内容を表示する（非Activeの書籍もIDを指定すれば表示できる） |
+| 追加 / 編集 | 入力して保存する（Title・Author は必須、ISBN・Published Year は任意） |
+| 削除 | 確認したうえで削除する |
 
-開始地点は固定です。開始ブランチを checkout して直接作業を続けたり、
-開始タグを新しいコミットへ動かしたりしません。
+旧版の技術構成（`shared-legacy-app/` のソースを読んで確認した内容）:
 
-旧い開始地点（`demo/00-legacy` / `demo/start-v1`）のrefは、ref整理で削除しました
-（コミット `830d46e` は `main` の履歴に残っています）。
-開始地点の文書には「旧い開始地点を残している」と書かれていますが、その後refを削除したものです。
+- .NET Framework 4.8 / ASP.NET MVC 5 / Entity Framework 6 の、**非SDK形式**のWebアプリケーションプロジェクト。
+  依存関係は `packages.config` と `HintPath` で管理している。
+- ルーティング、グローバルフィルタ、データベースの初期化は `Global.asax` と `App_Start/` で行う。
+- データベースは **SQL Server LocalDB の `BookCatalog.mdf`**（`|DataDirectory|`）。
+  接続文字列と Entity Framework 6 の設定は `Web.config` にある。
+- 起動時にテーブルを作成し、空であれば7件（Active 6件・非Active 1件）の初期データを投入する。
 
-## 実装を始めるときの手順
+この旧版コードは、公開教材から指定したコミットのまま**無改変で取り込んだ入力コード**です。
+このリポジトリではビルドも起動もしていません（Windows / IIS Express / SQL Server LocalDB を前提とするため）。
+取り込み元・範囲・無改変の確認結果は [docs/BASELINE.md](docs/BASELINE.md)、
+出典とライセンスは [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にあります。
 
-移行の実装は、**このリポジトリの作業ツリーでは行いません**。
-開始地点を clone した別のフォルダで、新しいAIセッションを動かします。
+## リポジトリ構成
 
-1. 開始地点を、隣のフォルダへ clone する。
-
-   ```
-   git clone --single-branch --branch demo/00-legacy-v2 --no-tags git@github.com:fukuda-yuki/misc-copilot.git ../misc-copilot-run01
-   ```
-
-   - SSH が使えない環境では、`git@github.com:fukuda-yuki/misc-copilot.git` を
-     `https://github.com/fukuda-yuki/misc-copilot.git` に読み替えます。
-   - `--no-tags` を付けているため開始タグは取得されませんが、`HEAD` は開始コミットを指します。
-
-2. clone したフォルダで、`HEAD` が開始コミットと一致することを確認する。
-
-   ```
-   cd ../misc-copilot-run01
-   git rev-parse HEAD
-   # cb90026f0a7692241544ea7c106cec5327ade630 と一致すること
-   ```
-
-3. **新しいAIセッション**（前の会話を引き継がないセッション）をそのフォルダで開始し、
-   次の短い指示だけを渡す。
-
-   > このリポジトリの docs/demo/START-MODERNIZE.md を読み、記載された移行を実施してください。
-   > 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`
-
-4. 実行AIは `feat/modernize-run01` を作業ブランチにし、段階ごとに `demo/run01/01-assessment` 〜
-   `demo/run01/04-verified` を打ちます。記録は clone 内の `docs/demo/runs/run01/` に残ります。
-
-実行ごとに**新しいフォルダ・新しいAIセッション・専用DB**を組み合わせ、run番号を新しくします（`run02`、`run03`…）。
-実行AIは `main` へ merge せず、PR の base には `demo/00-legacy-v2` を使います。
-
-## ブランチとタグの構成
-
-| ref | 種類 | 用途 | 動かすか |
-| --- | --- | --- | --- |
-| `main` | ブランチ | 人間向けの現在地（このREADMEと文書） | 更新してよい |
-| `demo/00-legacy-v2` | ブランチ | 移行の開始地点（clone 元） | 固定 |
-| `demo/start-v2` | タグ（注釈付き） | 開始地点の目印（`demo/00-legacy-v2` と同一コミット） | 固定 |
-| `feat/modernize-run01` | ブランチ | 実行AIの作業ブランチ（実行時に作る） | 実行中は進む |
-| `demo/run01/01-assessment` 〜 `04-verified` | ブランチ | 各段階の保存点（実行時に作る） | 固定 |
-
-- この表は、この移行デモで使うrefだけを載せています。
-- 準備段階で使ったブランチ（`feat/prepare-modernize-demo`、`feat/trim-prep-docs`）は削除しました。
-
-## ドキュメント
-
-| ファイル | 内容 |
+| パス | 内容 |
 | --- | --- |
-| [docs/demo/BASELINE.md](docs/demo/BASELINE.md) | 開始地点の短い記録。開始ブランチ・タグ、取り込み元と範囲、無改変確認の結果、未確認事項 |
-| [docs/demo/ACCEPTANCE.md](docs/demo/ACCEPTANCE.md) | 移行後の公開受入条件（要求の正本）。26条件を機能とデータ保存のまとまりで記載 |
-| [docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md) | 新しい実行AI向けの指示書（開始地点・作業段階・ブランチ・記録・成果物） |
-| [AGENTS.md](AGENTS.md) | このリポジトリで作業するAIが共通して守る短いルール |
-| [.github/copilot-instructions.md](.github/copilot-instructions.md) | GitHub Copilot を使う場合の共通ルールと、実行指示への案内 |
-| [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) | 第三者コードの出典、固定コミット、取得日、ライセンスの場所 |
+| `shared-legacy-app/` | 移行対象の旧版コード（無改変の入力コード） |
+| [docs/LEARNING-PATH.md](docs/LEARNING-PATH.md) | 学習の道筋（段階の一覧・参照先・完了の目安） |
+| [docs/BASELINE.md](docs/BASELINE.md) | 開始地点（ベースライン）の記録 |
+| [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | 完成条件（受入条件の正本・26条件） |
+| [licenses/](licenses/) | 取り込んだコードのライセンス全文 |
 
-## このデモで行わないこと
+## 学習の進め方
 
-- Docker / コンテナー / SQL Server / LocalDB / Azure の利用。
-- 旧版の画面と移行後の画面を同時に起動して比較する準備（今回の担当範囲に含みません）。
+段階の一覧は [docs/LEARNING-PATH.md](docs/LEARNING-PATH.md) にあります。
+読み進めるだけでも、実際に移行してみるのでも構いません。
+
+## 完成条件
+
+移行したアプリを「完成した」と言える条件は [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) にあります（26条件）。
+受入条件は実装に合わせて黙って弱めません。矛盾を見つけたら、根拠を示してその部分だけを解決します。
+
+## 始め方
+
+1. リポジトリを clone（または fork）します。
+2. 自分の作業用ブランチを作ります（例：`sandbox/<名前>`）。
+3. [docs/LEARNING-PATH.md](docs/LEARNING-PATH.md) を開き、段階0から進めます。
+
+開始地点は `demo/00-legacy-v2` ブランチと `demo/start-v2` タグ（注釈付きタグ）で固定しています。
+`main` にも同じ旧版コードが入っています。開始地点のrefは動かしません。
+学習や試行の結果は、自分のブランチに残します。
+
+## このサンドボックスのスコープ外
+
+- Docker・コンテナー・SQL Server・SQL Server LocalDB・Azure の利用。
+  移行後のデータベースにはローカルのSQLiteファイルを使います。
+- 旧版の画面と移行後の画面を同時に起動して比較するための準備。
 - 旧SQL Serverのデータを移行後のアプリへ移送すること。
 - UIの刷新、Blazor / SPA 化、マイクロサービス化。
+
+## 参考資料
+
+公式ドキュメント（Microsoft Learn）:
+
+- [.NET への移植（.NET Framework からの移行）](https://learn.microsoft.com/dotnet/core/porting/)
+- [プロジェクト SDK の概要](https://learn.microsoft.com/dotnet/core/project-sdk/overview)
+- [ASP.NET Core MVC の概要](https://learn.microsoft.com/aspnet/core/mvc/overview)
+- [Entity Framework Core](https://learn.microsoft.com/ef/core/)
+- [EF Core の SQLite プロバイダー](https://learn.microsoft.com/ef/core/providers/sqlite/)
+- [EF Core のマイグレーション](https://learn.microsoft.com/ef/core/managing-schemas/migrations/)
 
 ## 出典とライセンス
 
@@ -133,5 +107,5 @@ AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NET
 - 取り込んだコードは MIT ライセンス（Copyright (c) Microsoft Corporation.）です。
   ライセンス全文は [LICENSE](LICENSE) と
   [licenses/BookCatalog-Microsoft-LICENSE.txt](licenses/BookCatalog-Microsoft-LICENSE.txt) にあります。
-- このリポジトリは**Microsoft教材を利用した独自のSQLite移行デモ**です。
+- このリポジトリは**Microsoft教材を利用した独自の学習用サンドボックス**です。
   Microsoftがこのリポジトリを提供・保証しているものではありません。

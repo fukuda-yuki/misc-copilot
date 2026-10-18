@@ -1,11 +1,11 @@
 # START-ORCHESTRATE — 親セッション（オーケストレーター）へ渡す指示書
 
 この文書は、**前の会話を引き継がない新しいAIセッション**を「全体のオーケストレーター」として起動するための指示書です。
-読む人は、この文書・`docs/demo/` の公開要求・リポジトリ内の道具立て・旧版コードだけを入力として作業してください。
+読む人は、この文書・`docs/` の要求・リポジトリ内の道具立て・旧版コードだけを入力として作業してください。
 
 依頼者が新しいセッションへ渡す短い指示：
 
-> このリポジトリの docs/demo/START-ORCHESTRATE.md を読み、記載された並列開発を実施してください。
+> このリポジトリの `.github/ai/START-ORCHESTRATE.md` を読み、記載された並列開発を実施してください。
 > 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`
 
 準備担当の会話ログや、参考となる完成版は渡されません。この文書に書かれていないことで分からないことは、
@@ -15,7 +15,7 @@
 
 ## 1. 目的
 
-`docs/demo/START-MODERNIZE.md` の移行を、**親セッション（オーケストレーター）と子セッションの並列開発**として実施します。
+`.github/ai/START-MODERNIZE.md` の移行を、**親セッション（オーケストレーター）と子セッションの並列開発**として実施します。
 
 | 役割 | 誰が | 担当 |
 | --- | --- | --- |
@@ -30,9 +30,9 @@
 
 | 内容 | 正本 |
 | --- | --- |
-| 公開受入条件 | `docs/demo/ACCEPTANCE.md`（**黙って弱めない**） |
-| 移行の内容・段階・固定ブランチ・記録 | `docs/demo/START-MODERNIZE.md` |
-| 開始状態の説明 | `docs/demo/BASELINE.md` |
+| 受入条件 | `docs/ACCEPTANCE.md`（**黙って弱めない**） |
+| 移行の内容・段階・固定ブランチ・記録 | `.github/ai/START-MODERNIZE.md` |
+| 開始状態の説明 | `docs/BASELINE.md` |
 | 共通の短いルール | `AGENTS.md` |
 | 並列開発の手順 | `.github/skills/parallel-dev-orchestration/SKILL.md` |
 
@@ -55,9 +55,10 @@ CLI 入口（driver の子プロセスを責任者にして `task-pipeline` を�
 
 - `git rev-parse demo/00-legacy-v2` = `cb90026f0a7692241544ea7c106cec5327ade630`（開始ブランチと開始タグ `demo/start-v2` は同じコミット）。
 - `git diff --stat demo/00-legacy-v2 main -- shared-legacy-app` は**差分なし**（旧版アプリの内容は両者で同一）。
-- `main` は `demo/00-legacy-v2` の子孫で、差分は道具立ての追加のみ
-  （`.github/extensions/integrate-task/`・`.github/integrate-task.policy.json`・`.github/skills/`・
-  `docs/demo/START-ORCHESTRATE.md`・`README.md`）。実行時に `git rev-parse main` で現在の SHA を実測して記録する。
+- `main` は `demo/00-legacy-v2` の子孫（`git merge-base --is-ancestor` が真）。差分は道具立て
+  （`.github/extensions/integrate-task/`・`.github/integrate-task.policy.json`・`.github/skills/`）と文書
+  （`docs/`・`.github/ai/`・`README.md`）で、旧版アプリのソースは変わっていない。
+  実行時に `git rev-parse main` と `git diff --stat demo/00-legacy-v2 main` で現在の状態を実測して記録する。
 
 子の worktree は既定ブランチから作られるため、**道具立てを含む `main` から統合ブランチを切ります**。
 開始地点と内容が同一である根拠は上記の差分で、この判断と根拠を実行記録に残してください。
@@ -67,14 +68,14 @@ CLI 入口（driver の子プロセスを責任者にして `task-pipeline` を�
 - `verify` は「統合後の状態で成立すべき検証」を書く。例：`dotnet build shared-legacy-app/BookCatalog.sln`（timeoutSeconds 600）。
   統合のたびにこの検証が走ります。
 - 各作業単位の検証は `task-pipeline` の `verify` 引数で上書きできる。**単位ごとに意味のある検証**を書く。
-- `guardPaths` に `docs/demo/ACCEPTANCE.md`・`AGENTS.md`・`.github/` を入れる（子が受入条件や道具立てを書き換えられないようにする）。
+- `guardPaths` に `docs/ACCEPTANCE.md`・`AGENTS.md`・`.github/` を入れる（子が受入条件や道具立てを書き換えられないようにする）。
 - 更新は統合ブランチで**親が直接**コミットする。子には触らせない。
 
 ## 5. 進め方
 
 ### 5.1 段階1（調査）・段階2（計画）は親が担当する（並列化しない）
 
-`START-MODERNIZE.md` の段階1・段階2 を親が行い、統合ブランチへコミットして `demo/run01/01-assessment`・`demo/run01/02-plan` を作ります。
+`.github/ai/START-MODERNIZE.md` の段階1・段階2 を親が行い、統合ブランチへコミットして `demo/run01/01-assessment`・`demo/run01/02-plan` を作ります。
 
 ### 5.2 段階3（実装）を作業単位に分けて子へ割り当てる
 
@@ -95,15 +96,15 @@ CLI 入口（driver の子プロセスを責任者にして `task-pipeline` を�
 
 ### 5.4 段階4（起動と受入確認）は親が担当する
 
-- 受入確認は統合ブランチで親が実施し、`docs/demo/runs/run01/verification.md` に記録して `demo/run01/04-verified` を作る。
+- 受入確認は統合ブランチで親が実施し、`.github/ai/runs/run01/verification.md` に記録して `demo/run01/04-verified` を作る。
 - **不明点や未実施項目があるまま `verified` という名前を付けない。**
 - 検証後に対象を変更したら、新しいSHAを記録して影響する確認を再実施する。
 
 ### 5.5 最終レビューと PR
 
-- 統合ブランチ全体を `ACCEPTANCE.md` と突き合わせてレビューする。
+- 統合ブランチ全体を `docs/ACCEPTANCE.md` と突き合わせてレビューする。
 - PR は**ユーザーに確認してから**作る：`gh pr create --base main --head feat/modernize-run01`
-  （`START-MODERNIZE.md` は `demo/00-legacy-v2` を base にした Draft PR を挙げている。統合ブランチを `main` から切ったため、
+  （`.github/ai/START-MODERNIZE.md` は `demo/00-legacy-v2` を base にした Draft PR を挙げている。統合ブランチを `main` から切ったため、
   base を `main` にする判断と、その理由・差分を実行記録に残す）
 - **マージはユーザーが承認した範囲でのみ**実行する。勝手にマージ・push しない。
 
@@ -119,7 +120,7 @@ CLI 入口（driver の子プロセスを責任者にして `task-pipeline` を�
 
 ## 7. 記録
 
-- 実行記録は `docs/demo/runs/run01/` に置く（`assessment.md` / `plan.md` / `verification.md` などは実際の作業に合わせる）。
+- 実行記録は `.github/ai/runs/run01/` に置く（`assessment.md` / `plan.md` / `verification.md` などは実際の作業に合わせる）。
 - 並列開発の記録（`orchestration.md` を推奨）：作業単位表、子セッションID、提出コミット、`integrate-task` の state 遷移、統合コミット、所要時間、失敗と対処。
 - 使ったツールとバージョン、コマンド、作業場所、終了コード、URL、DBパスを残す。
 - ログに認証情報や不要な個人情報を保存しない。

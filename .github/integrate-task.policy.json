@@ -15,6 +15,7 @@
   "guardPaths": [
     ".github/integrate-task.policy.json",
     ".github/extensions/integrate-task/",
-    "AGENTS.md"
+    "AGENTS.md",
+    "docs/ACCEPTANCE.md"
   ]
 }

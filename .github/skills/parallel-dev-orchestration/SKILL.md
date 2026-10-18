@@ -59,7 +59,7 @@ git switch -c agent-integration/<run>      # 既にあれば switch だけ
 
 ### 2. 作業単位を決める（人間に列挙させない）
 
-- 受入条件の正本は `docs/demo/ACCEPTANCE.md`。ここから「独立して検証できる単位」へ切り分ける。
+- 受入条件の正本は `docs/ACCEPTANCE.md`。ここから「独立して検証できる単位」へ切り分ける。
 - 各単位に次を決める。
   - `taskId`: 英数字で始まる短い ID（例 `T1`）
   - `title`: 短い名前

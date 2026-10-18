@@ -1,12 +1,12 @@
 # START-MODERNIZE — BookCatalog を .NET 10 へ移行する実行AIへの指示
 
 この文書は、**前の会話を引き継がない新しいAIセッション**に渡す指示書です。
-読む人は、この文書とリポジトリ内の公開要求・旧版コードだけを入力として作業してください。
+読む人は、この文書とリポジトリ内の要求（`docs/`）・旧版コードだけを入力として作業してください。
 
 依頼者が新しいセッションへ渡す短い指示：
 
-> このリポジトリの docs/demo/START-MODERNIZE.md を読み、記載された移行を実施してください。
-> 開始コミット：`<demo/start-v2 のコミットSHA>`
+> このリポジトリの `.github/ai/START-MODERNIZE.md` を読み、記載された移行を実施してください。
+> 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`
 
 準備担当の会話ログや、参考となる完成版は渡されません。この文書に書かれていないことで分からないことは、
 自分で調べて判断し、判断内容と根拠を記録してください。
@@ -27,15 +27,15 @@ Docker、SQL Server、LocalDB、Azure を使わず、ローカルで自由に操
 | 対象リポジトリ | `fukuda-yuki/misc-copilot`（https://github.com/fukuda-yuki/misc-copilot） |
 | 開始ブランチ | `demo/00-legacy-v2` |
 | 開始タグ | `demo/start-v2`（注釈付きタグ） |
-| 開始コミット | **依頼者から渡される短い指示に記載されたSHA**（この文書には書けない。下記参照） |
+| 開始コミット | `cb90026f0a7692241544ea7c106cec5327ade630`（開始ブランチと開始タグが指すコミット。実測） |
 | 対象ソリューション | `shared-legacy-app/BookCatalog.sln` |
 | 対象Webプロジェクト | `shared-legacy-app/src/BookCatalog.Web/BookCatalog.Web.csproj` |
-| 開始状態の説明 | `docs/demo/BASELINE.md` |
-| 公開受入条件 | `docs/demo/ACCEPTANCE.md` |
+| 開始状態の説明 | `docs/BASELINE.md` |
+| 受入条件 | `docs/ACCEPTANCE.md` |
 | 共通の短いルール | `AGENTS.md` |
 
 開始ブランチ `demo/00-legacy-v2` と開始タグ `demo/start-v2` は**同じコミット**を指します。
-そのコミットが移行の開始地点です。**開始コミットのSHAは、依頼者から渡される短い指示に記載されています。**
+そのコミットが移行の開始地点です。**開始コミットのSHAは `docs/BASELINE.md` にも記録しています。**
 準備担当の引き継ぎ報告や準備PRの本文を探しに行く必要はありません。
 
 開始地点は固定です。**開始ブランチを checkout して作業を続けたり、開始タグを新しいコミットへ動かしたりしないでください。**
@@ -48,18 +48,20 @@ git clone --single-branch --branch demo/00-legacy-v2 --no-tags https://github.co
 ```
 
 - これは**固定した開始ブランチだけ**を追跡する新しい作業フォルダを作ります。
-- clone した直後に `git rev-parse HEAD` を実行し、**短い指示に記載された開始コミットと一致すること**を確認してください。
-- `--no-tags` を付けているため、開始タグは取得されません。開始タグが必要な場合は、渡されたSHAと照合してから使ってください。
+- clone した直後に `git rev-parse HEAD` を実行し、**開始コミット `cb90026f...` と一致すること**を確認してください。
+- `--no-tags` を付けているため、開始タグは取得されません。開始タグが必要な場合は、上記SHAと照合してから使ってください。
+- **開始地点のツリーでは、文書は `docs/demo/` にあります**（例：`docs/demo/ACCEPTANCE.md`）。
+  現在の `main` では `docs/` に移しています（例：`docs/ACCEPTANCE.md`）。受入条件の本文は同じです。
 - 実行IDは初回 `run01`、次は `run02` のように新しくします。
   実行ごとに**新しい作業フォルダ・新しいAIセッション・専用DB**を組み合わせます。
 - **この開始地点より前の文書リビジョンは読まないでください。**
   履歴には整理前の文書（移行前の事前分析を含む）が残っています。
-  `git log -p` や `git show <過去のコミット>:docs/demo/...` で過去の文書を読み直したり、
+  `git log -p` や `git show <過去のコミット>:docs/...` で過去の文書を読み直したり、
   全refsの履歴を探索したりしないでください。**調査は、開始地点の作業ツリーから行います。**
 
 ## 3. 最初にやること
 
-1. `AGENTS.md`、`docs/demo/BASELINE.md`、`docs/demo/ACCEPTANCE.md` と、旧版コードを読む。
+1. `AGENTS.md`、`docs/BASELINE.md`、`docs/ACCEPTANCE.md` と、旧版コードを読む。
 2. 現在の `HEAD` が開始地点と一致し、他人の変更が無いことを確認する（`git status`、`git rev-parse HEAD`）。
 3. この実行環境で利用可能な .NET SDK / ランタイムと、移行ツールの利用可否を**実測**する（第6節）。
 4. 初回は `run01` として、作業ブランチ `feat/modernize-run01` を作成する。
@@ -86,7 +88,7 @@ git clone --single-branch --branch demo/00-legacy-v2 --no-tags https://github.co
 - 旧レコードの移送はせず、**新規のSQLiteデモDB**を使う。
 - **安定版 .NET 10** を対象にし、実際に利用するSDKとパッケージの版を記録・固定する。
 - EF Core の SQLite provider と必要なEF関連ツールは、.NET 10 に対応する安定した**10系**で互換性のある組み合わせを使う。
-- この段階で、**SQLite化と seed の寿命変更を含む公開要件**（`docs/demo/ACCEPTANCE.md`）を実装する。
+- この段階で、**SQLite化と seed の寿命変更を含む受入条件**（`docs/ACCEPTANCE.md`）を実装する。
 
 ## 6. 使用ツール
 
@@ -135,7 +137,7 @@ git clone --single-branch --branch demo/00-legacy-v2 --no-tags https://github.co
 
 - 検証するアプリと検証用コードを先にコミットし、対象SHAを記録する。
 - この実行で移行したアプリを、**実ファイルのSQLite**で起動する。
-- `docs/demo/ACCEPTANCE.md` に従い、CRUD、入力検証、Active切替、CreatedDate保持、
+- `docs/ACCEPTANCE.md` に従い、CRUD、入力検証、Active切替、CreatedDate保持、
   通常再起動後の保存、seed、DB分離を確認する。
 - 失敗を修正し、確認できなければ**未完了**として記録する。
 - 必要な確認がすべて通過したら、検証結果の文書を後続コミットに保存し、
@@ -152,7 +154,7 @@ git clone --single-branch --branch demo/00-legacy-v2 --no-tags https://github.co
 
 ## 9. 記録
 
-- 汎用エージェントの記録は `docs/demo/runs/run01/` 以下に保存する。
+- 汎用エージェントの記録は `.github/ai/runs/run01/` 以下に保存する。
 - `assessment.md`、`plan.md`、`verification.md` 等は、実際の作業に合わせて作る。
 - Modernize製品を使った場合、実際に生成された `.github/upgrades/<実際のscenarioId>/` 以下の
   必要な記録もソースと一緒に残す。**scenarioIdや製品内部の進捗・成功状態を架空に作らない。**

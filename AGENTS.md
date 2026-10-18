@@ -1,20 +1,27 @@
 # AGENTS.md
 
 このファイルは、このリポジトリで作業するAIエージェント向けの短い共通指示です。
-詳しい公開要求は `docs/demo/` の各文書を参照してください。
+詳しい要求は `docs/` の各文書、AI向けの手順は `.github/ai/` の各文書を参照してください。
 
 ## 目的
 
 旧版 BookCatalog（.NET Framework 4.8 / ASP.NET MVC 5 / Entity Framework 6 / SQL Server LocalDB）を、
 .NET 10 / ASP.NET Core MVC / Entity Framework Core / ローカルSQLite へ移行し、
-ローカルで自由に操作できるデモアプリにすること。
+ローカルで自由に操作できるアプリにすること。
+
+## 文書の置き場所
+
+- 学習者向けの文書（`README.md`、`docs/`）には、AIセッション・run番号・並列開発・準備/実行の役割分担を書かない。
+  学習の進め方と要求だけを書く。
+- AI向けの指示は、このファイル・`.github/copilot-instructions.md`・`.github/ai/` に置く。
+- 受入条件（`docs/ACCEPTANCE.md`）は要求の正本でもあるため、AI前提の言い回しを入れない。
 
 ## 作業範囲
 
 - 対象は既存の単一Webプロジェクト `shared-legacy-app/src/BookCatalog.Web/`。
   その場所で移行し、別の完成アプリを追加して旧版を放置する構成にはしない。
 - UIの刷新、Blazor / SPA 化、マイクロサービス化、Azure 展開は行わない。
-- 旧レコードの移送は行わず、このデモ専用の新規SQLiteデータベースを使う。
+- 旧レコードの移送は行わず、このサンドボックス専用の新規SQLiteデータベースを使う。
 - Docker、コンテナー、SQL Server、SQL Server LocalDB、Azure は使わない。
 - インメモリDB（EF InMemory、`:memory:` のみ）で動かして完成としない。
 
@@ -23,14 +30,14 @@
 - 上流の完成済み実装、完成版向けテスト、既成の移行計画、実行済みレポート、講師用の解答資料。
 - 過去runの完成コード。過去runのブランチを fetch / checkout したり、全refsの履歴を探索したりしない。
 - 開始地点（`demo/00-legacy-v2`）より前の文書リビジョン。整理前の事前分析が入っているため、
-  `git log -p` や `git show <過去のコミット>:docs/demo/...` で読み直さない。
+  `git log -p` や `git show <過去のコミット>:docs/...` で読み直さない。
 - 完成コードをダウンロードして変更したものを「今回の移行結果」としない。
 - 一般的な Microsoft Learn / .NET / EF Core / SQLite / GitHub の公式資料による調査は許可する。
   ただし出典リンクを手掛かりに完成例を開くことは禁止する。
 
 ## 受入条件
 
-- 受入条件の参照先は [docs/demo/ACCEPTANCE.md](docs/demo/ACCEPTANCE.md)。
+- 受入条件の参照先は [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。
 - 受入条件を実装に合わせて黙って弱めない。要求の矛盾を見つけたら根拠を示し、その部分だけ解決を求める。
 - テストを通すために入力検証やantiforgery保護を無効にしない。
 

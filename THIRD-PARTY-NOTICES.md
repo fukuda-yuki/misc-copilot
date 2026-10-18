@@ -26,7 +26,7 @@
 - 上流ルートの `LICENSE`
 
 取り込んだファイルは24件で、いずれも上流の blob SHA と一致することを確認しています
-（確認方法は [docs/demo/BASELINE.md](docs/demo/BASELINE.md) の「無改変確認の結果」を参照）。
+（確認方法は [docs/BASELINE.md](docs/BASELINE.md) の「無改変確認の結果」を参照）。
 
 ## 無改変確認（ファイル単位の結果）
 

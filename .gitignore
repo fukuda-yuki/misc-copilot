@@ -73,5 +73,5 @@ Desktop.ini
 
 # ---- 意図的に除外しないもの（参考） ----
 # .github/upgrades/    : Modernize 製品の実レポートを残す場所
-# docs/                : 公開要求・受入条件・検証記録
+# docs/                : 学習の道筋・開始地点・受入条件
 # shared-legacy-app/   : 移行対象の旧版コードと設定

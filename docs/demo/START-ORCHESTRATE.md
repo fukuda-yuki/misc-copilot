@@ -50,8 +50,9 @@
 
 - `git rev-parse demo/00-legacy-v2` = `cb90026f0a7692241544ea7c106cec5327ade630`（開始ブランチと開始タグ `demo/start-v2` は同じコミット）。
 - `git diff --stat demo/00-legacy-v2 main -- shared-legacy-app` は**差分なし**（旧版アプリの内容は両者で同一）。
-- `main`（実測時 `b5608928b0c32247d043f1e6e7cb03696c633a1e`）は `demo/00-legacy-v2` の子孫で、差分は
-  `.github/extensions/integrate-task/`・`.github/integrate-task.policy.json`・`README.md` の追加のみ。
+- `main` は `demo/00-legacy-v2` の子孫で、差分は道具立ての追加のみ
+  （`.github/extensions/integrate-task/`・`.github/integrate-task.policy.json`・`.github/skills/`・
+  `docs/demo/START-ORCHESTRATE.md`・`README.md`）。実行時に `git rev-parse main` で現在の SHA を実測して記録する。
 
 子の worktree は既定ブランチから作られるため、**道具立てを含む `main` から統合ブランチを切ります**。
 開始地点と内容が同一である根拠は上記の差分で、この判断と根拠を実行記録に残してください。

@@ -6,7 +6,7 @@ import { writeEvidenceFile } from "./store.mjs";
  * 検証がワークツリーを書き換えた場合、その結果は受入の根拠にならないため不合格にする。
  */
 export async function runVerifyCommands(options) {
-  const { worktree, policy, evidenceDir, signal, env } = options;
+  const { worktree, policy, evidenceDir, signal, env, captureOutput = false, maxOutputChars = 2000 } = options;
   const before = { head: await headOf(worktree), tracked: await statusPorcelain(worktree, { includeUntracked: false }) };
   const results = [];
 
@@ -31,6 +31,7 @@ export async function runVerifyCommands(options) {
         durationMs: Date.now() - startedAt,
         failedToStart: error.message,
         passed: false,
+        ...(captureOutput ? { stderr: error.message } : {}),
       });
       break;
     }
@@ -42,6 +43,9 @@ export async function runVerifyCommands(options) {
       timedOut: outcome.timedOut === true,
       durationMs: Date.now() - startedAt,
       passed: outcome.code === 0 && outcome.timedOut !== true,
+      ...(captureOutput
+        ? { stdout: tail(outcome.stdout ?? "", maxOutputChars), stderr: tail(outcome.stderr ?? "", maxOutputChars) }
+        : {}),
     });
     if (evidenceDir !== undefined && evidenceDir !== null) {
       await writeEvidenceFile(evidenceDir, `verify-${results.length}-${sanitize(entry.name)}.stdout.txt`, outcome.stdout ?? "");
@@ -68,4 +72,11 @@ export async function runVerifyCommands(options) {
 
 function sanitize(name) {
   return name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 60);
+}
+
+/** captureOutput のときだけ使う。失敗の原因を修正役へ渡すため、出力の末尾だけを切り出す。 */
+function tail(text, limit) {
+  const value = String(text);
+  if (value.length <= limit) return value;
+  return `...(先頭 ${value.length - limit} 文字を省略)\n${value.slice(-limit)}`;
 }

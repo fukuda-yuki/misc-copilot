@@ -3,12 +3,13 @@
 子セッションが提出したコミットを、親セッションの受け付け（受付 = operation）に従って検証し、
 ターゲットブランチへ **履歴を保ったまま** 統合するためのツールです。
 
-入口は 2 つあり、**判断と実測の中核は共有** します。違うのは「誰が操作を提案するか」だけです。
+入口は 3 つあり、**判断と実測の中核は共有** します。違うのは「誰が何を担当するか」だけです。
 
-| 入口 | 実行するもの | 操作を提案する人 |
+| 入口 | 実行するもの | 担当 |
 | --- | --- | --- |
-| Copilot App | `.github/extensions/integrate-task/extension.mjs`（ワークフロー `integrate-task`） | App 側のセッション（1 受付ずつ `operationId` を指定） |
-| CLI | `driver/cli.mjs`（AI を呼ばない常駐 driver） | 非対話で起動した親セッション（`--prompt` + `--output-format=json`） |
+| Copilot App（親セッション＝オーケストレーター） | スキル `.github/skills/parallel-dev-orchestration/SKILL.md` とワークフロー `integrate-task` | 作業単位を決め、子セッションへ割り当て、提出を 1 件ずつ統合し、最終レビューと PR まで進める |
+| Copilot App（子セッション） | `.github/extensions/integrate-task/extension.mjs`（ワークフロー `task-pipeline`） | 専用 worktree／専用ブランチで 実装 → 検証 → レビュー → 修正 → 提出コミット |
+| CLI | `driver/cli.mjs`（AI を呼ばない常駐 driver） | 非対話で起動した親セッション（`--prompt` + `--output-format=json`）が提案する操作の適用 |
 
 - 実装: プレーンな ESM（`.mjs`）。ビルドも npm 依存もありません。
 - 統合の判断（受付の検証・候補の作成・ff-only 公開）は `integrate/engine.mjs` が正本で、
@@ -56,7 +57,7 @@ driver（`driver/`）は AI を呼びません。担当セッションの起動�
 ## ファイル構成
 
 ```
-extension.mjs         App 入口。defineWorkflow + joinSession でワークフローを登録する
+extension.mjs         App 入口。defineWorkflow + joinSession で 2 つのワークフローを登録する
 core/                 SDK 非依存・プロセス非依存の共通部分
   state.mjs           状態 enum・理由コード・引数検証・戻り値の形
   git.mjs             git の薄いラッパ（シェル不使用・cwd 指定・配列引数）
@@ -69,6 +70,11 @@ integrate/            統合の判断と実測（App と driver が共有する�
   ports.mjs           ProjectPorts の実装（git・ファイル・プロセスの実測）と registerOperation
   ledger.mjs          受付の台帳（原子的書き込み・証拠ディレクトリの採番）
   cli.mjs             受付の登録・一覧・単体実行（1 受付ずつ動かす入口）
+task/                 子セッションの工程（App の 2 つ目のワークフロー）
+  engine.mjs          判断の順序（createTaskPipelineRun(ports)）: 実装 → 検証 → レビュー → 修正ループ → 提出
+  ports.mjs           作業ツリー・ポリシー・検証・提出コミットの実測（cwd を注入できる）
+  prompts.mjs         実装役・修正役・レビュー役のプロンプトと REVIEW_SCHEMA
+  state.mjs           TASK_STATE / TASK_DETAIL / validateTaskArgs
 driver/               CLI 限定の常駐 driver（プロセス起動・イベント・台帳・枠）
   cli.mjs             人間と CI の入口（doctor / run / resume / status / tasks / events /
                       operations / logs / parent / stop / recover / check / apply /
@@ -89,8 +95,9 @@ test/                 一時リポジトリと fake copilot を使ったテス�
   fake-copilot.mjs    実測した JSONL をまねる差し替え用 copilot（担当 14 種・親 17 種の振る舞い）
 ```
 
-依存の向きは `driver/ → integrate/ → core/` の一方向です。`core/` と `integrate/` は
-Copilot の SDK にも `copilot` コマンドにも依存しません。
+依存の向きは `driver/ → integrate/ → core/`、`task/ → core/` の一方向です。`core/` と `integrate/` は
+Copilot の SDK にも `copilot` コマンドにも依存しません（SDK に依存するのは `extension.mjs` だけです）。
+`task/` も SDK に依存せず、`ctx` を引数で受け取る形にしてテストから直接呼べるようにしています。
 
 ## 使い方（CLI）
 
@@ -98,21 +105,21 @@ Copilot の SDK にも `copilot` コマンドにも依存しません。
 
 ```powershell
 # 1. 親が受付を登録する（ポリシーのハッシュをここで固定する）
-node .github/extensions/integrate-task/cli.mjs register `
+node .github/extensions/integrate-task/integrate/cli.mjs register `
   --operation-id op-2026-10-16-01 `
   --submitted <child-commit> `
   --repo <repo> `
   --target-branch main
 
 # 2. 検証だけ行う（ターゲットは動かない）
-node .github/extensions/integrate-task/cli.mjs run --operation-id op-2026-10-16-01 --mode check --expect VERIFIED_NOT_PUBLISHED
+node .github/extensions/integrate-task/integrate/cli.mjs run --operation-id op-2026-10-16-01 --mode check --expect VERIFIED_NOT_PUBLISHED
 
 # 3. 検証に通った候補を反映する
-node .github/extensions/integrate-task/cli.mjs run --operation-id op-2026-10-16-01 --mode apply --expect INTEGRATED
+node .github/extensions/integrate-task/integrate/cli.mjs run --operation-id op-2026-10-16-01 --mode apply --expect INTEGRATED
 
 # 後片付け
-node .github/extensions/integrate-task/cli.mjs cleanup --operation-id op-2026-10-16-01
-node .github/extensions/integrate-task/cli.mjs unregister --operation-id op-2026-10-16-01
+node .github/extensions/integrate-task/integrate/cli.mjs cleanup --operation-id op-2026-10-16-01
+node .github/extensions/integrate-task/integrate/cli.mjs unregister --operation-id op-2026-10-16-01
 ```
 
 `--expect` は期待する `state` と違えば終了コード 3 を返すので、CI やスクリプトの判定に使えます。
@@ -125,6 +132,45 @@ node .github/extensions/integrate-task/cli.mjs unregister --operation-id op-2026
 ```
 run_dynamic_workflow({ name: "integrate-task", args: { operationId: "op-2026-10-16-01", mode: "apply" } })
 ```
+
+同じ拡張が、子セッション側の工程として `task-pipeline` も登録します。対象は**このワークフローが動いている
+作業ツリー**（子セッションの worktree）で、実装 → 検証 → レビュー → 修正ループ → 提出コミットまでを 1 回で行います。
+
+```
+run_dynamic_workflow({
+  name: "task-pipeline",
+  args: {
+    taskId: "T1",
+    title: "プロジェクトの net10.0 化",
+    prompt: "受入条件。何を作り、何を満たせば完了かを具体的に書く。",
+    roles: { implementer: { reasoningEffort: "medium" }, reviewer: { reasoningEffort: "high" } },
+    maxReworks: 2,
+  },
+})
+```
+
+| args | 必須 | 意味 |
+| --- | --- | --- |
+| `taskId` | ○ | 英数字で始まる 1〜100 文字の `[A-Za-z0-9._-]`。証拠ディレクトリと subagent のラベルに使う |
+| `title` | ○ | 短い名前（1〜200 文字）。既定の提出コミットメッセージにも使う |
+| `prompt` | ○ | 受入条件。実装役とレビュー役の**両方**に渡る |
+| `roles` | | `implementer` / `reviewer` の `{ model, reasoningEffort }`。省略するとこのセッションの既定を使う |
+| `verify` | | ポリシーの `verify` を置き換える（`{ name, command, args, timeoutSeconds }` の配列、1 件以上） |
+| `maxReworks` | | 実装 → 検証 → レビューの再試行回数（0〜5、既定 2） |
+| `commitMessage` | | 提出コミットのメッセージ |
+
+- 実装役の subagent には**コミットさせません**。変更を検証し、レビューが承認したら、ワークフロー自身が
+  `git add -A` と提出コミットを作ります（`user.name=task-pipeline` / `commit.gpgsign=false`）。
+- subagent は cwd を持てないため、作業ツリーの絶対パスをプロンプトで渡します。
+- 証拠は**作業ツリーの外**（`<home>/evidence/task/<taskId>/<連番>/`）に残します。作業ツリーを汚しません。
+- 戻り値には `state` / `detail` / `message` / `submittedHead` / `evidenceRef` のほか、
+  `worktree` / `branch` / `baseCommit` / `attempts` / `verify`（`ok` と各コマンドの終了コード）/ `review`（`verdict` と `findings`）/
+  `files` / `durationMs` が入ります。親はこれをそのまま統合待ちキューへ渡せます。
+
+| state | 意味 | 主な detail |
+| --- | --- | --- |
+| `SUBMITTED` | 提出コミットを作った。親の統合待ちキューへ登録する | `submitted` |
+| `NEEDS_PARENT` | 親の判断・作業が必要 | `invalid-arguments`, `not-a-repository`, `worktree-dirty`, `worktree-git-operation`, `policy-missing`, `implement-failed`, `review-unavailable`, `rework-exhausted`, `nothing-to-submit`, `submit-failed` |
 
 ## CLI 限定の driver の使い方
 
@@ -273,6 +319,8 @@ driver は同じホームの下に実行ごとの記録を置きます（`--home
   - 実 copilot での異常系（権限拒否・時間切れ・セッション消失）。
     これらは差し替え用 copilot を使ったテストで確認している（下記）。
   - `copilot` CLI 単体が `.github/extensions/` を読むかどうか（App からの実行は確認済み）。
+  - `task-pipeline` の実 copilot での実走（差し替え `ctx` のテストのみ）。
+  - 子セッションの worktree で `extensions_reload` が効くかどうか（未検証）。
 
 ## テスト
 
@@ -282,13 +330,19 @@ node --test .github/extensions/integrate-task/test/*.test.mjs
 
 一時リポジトリと、実測した JSONL をまねる差し替え用 copilot（`test/fake-copilot.mjs`）で
 実際にプロセスを起動して検証します。テストは `copilot` 本体を呼びません。
-89 件 pass（40.8 秒、Windows / node v24.15.0）を実測しています。
+101 件 pass（41.6 秒、Windows / node v24.15.0、2026-10-16 実測）を確認しています。
+`task-pipeline` は `ctx` を差し替えて呼ぶ 12 件を含みます。
 
 ## 注意
 
 - このツールは `orchestrate`（セッションの起動・メッセージング）の代替ではありません。
   受け付けたコミットを検証して統合する部分だけを担当します。
 - ターゲットブランチをチェックアウトしている worktree が必要です。
+- `task-pipeline` は子セッションの worktree（このワークフローが動いている作業ツリー）を対象にします。
+  子の worktree は既定ブランチから作られるため、この拡張とスキルが**既定ブランチにコミット済み**でないと
+  子は `task-pipeline` を実行できません。子が統合ブランチから作業ブランチを切る手順は
+  `.github/skills/parallel-dev-orchestration/SKILL.md` にあります。
+- `task-pipeline` は統合しません。提出コミットを統合待ちキュー（`integrate-task`）へ登録するのは親の仕事です。
 - 排他はマシン内のファイルロックです。同じ台帳ディレクトリを共有する別マシンとは排他しません。
 - 確認済みの環境: Windows / node v24.15.0 / git 2.53.0.windows.4 / copilot 1.0.99-2。
 - driver は `copilot` の `--allow-all`（`--yolo`）を使いません。使えないツールを検出した場合は

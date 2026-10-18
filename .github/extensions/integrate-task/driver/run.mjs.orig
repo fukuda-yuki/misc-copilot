@@ -1,0 +1,1298 @@
+// CLI 限定並列開発の driver。判断（いつ何を起こすか）はこのファイルに置き、
+// AI は呼ばない。親セッションは非対話 CLI として起動し、操作提案だけを受け付ける。
+
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+
+import { addWorktree, currentBranch, gitDirOf, isClean, resolveCommit, resolveRepoContext, revParseOrNull } from "../core/git.mjs";
+import { acquireScopeLock, releaseScopeLock } from "../core/lock.mjs";
+import { LEDGER_STATE, STATE as INTEGRATION_STATE } from "../core/state.mjs";
+import { resolveHome } from "../core/store.mjs";
+import { createIntegrationRun } from "../integrate/engine.mjs";
+import { createProjectPorts, readRegisteredOperation, registerOperation, removeOperation } from "../integrate/ports.mjs";
+import { classifyAttempt, readReport, reportInstructions } from "./events.mjs";
+import { normalizePools, pendingDispatches, verifySlotScope } from "./pools.mjs";
+import {
+  OPERATION_KIND,
+  describeOperation,
+  extractSessionId,
+  parseOperationBlocksFromOutput,
+  protocolInstructions,
+  validateOperation,
+} from "./protocol.mjs";
+import { CapabilityError, DEFAULT_DENY_TOOLS, DEFAULT_PARENT_ALLOW_TOOLS, DEFAULT_TASK_ALLOW_TOOLS, buildArgs, createSessionRegistry, isProcessAlive, promptReference, runSession, stopSession, writePromptFile } from "./session.mjs";
+import {
+  ATTEMPT_STATE,
+  RESUMABLE_STATES,
+  RUN_STATE,
+  TASK_DETAIL,
+  TASK_STATE,
+  canTransition,
+  summarizeTasks,
+} from "./state.mjs";
+import {
+  appendEvent,
+  archiveReport,
+  ensureRunLayout,
+  listAttempts,
+  listOperationRecords,
+  listTasks,
+  newRunId,
+  readAttempt,
+  readOperationRecord,
+  readParent,
+  readRun,
+  runLayout,
+  updateRun,
+  worktreesRoot,
+  writeAttempt,
+  writeOperationRecord,
+  writeParent,
+  writeRun,
+  writeTask,
+} from "./store.mjs";
+
+const STOP_REQUEST_FILE = "stop-request.json";
+
+const ATTEMPT_TO_TASK_STATE = Object.freeze({
+  [TASK_STATE.SUBMITTED]: ATTEMPT_STATE.DONE,
+  [TASK_STATE.NEEDS_PARENT]: ATTEMPT_STATE.QUESTION,
+  [TASK_STATE.BLOCKED]: ATTEMPT_STATE.BLOCKED,
+  [TASK_STATE.INTERRUPTED]: ATTEMPT_STATE.INTERRUPTED,
+  [TASK_STATE.NEEDS_HUMAN]: ATTEMPT_STATE.UNKNOWN,
+});
+
+const INTEGRATION_TO_TASK_STATE = Object.freeze({
+  [INTEGRATION_STATE.INTEGRATED]: TASK_STATE.INTEGRATED,
+  [INTEGRATION_STATE.VERIFIED_NOT_PUBLISHED]: TASK_STATE.SUBMITTED,
+  [INTEGRATION_STATE.NEEDS_PARENT]: TASK_STATE.NEEDS_PARENT,
+  [INTEGRATION_STATE.STALE_TARGET]: TASK_STATE.STALE_TARGET,
+  [INTEGRATION_STATE.BLOCKED]: TASK_STATE.BLOCKED,
+});
+
+const PARENT_ATTENTION_STATES = new Set([TASK_STATE.BLOCKED, TASK_STATE.INTERRUPTED, TASK_STATE.STALE_TARGET]);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function defaultConfig(overrides = {}) {
+  const env = overrides.env ?? process.env;
+  return {
+    env,
+    home: overrides.home ?? resolveHome(env),
+    cwd: overrides.cwd ?? process.cwd(),
+    command: overrides.command ?? "copilot",
+    // command の前に置く引数。テストで copilot を差し替えるときや、
+    // `node <script>` のように起動するときに使う。
+    commandArgs: overrides.commandArgs ?? [],
+    capabilities: overrides.capabilities ?? null,
+    capabilityProbe: overrides.capabilityProbe ?? null,
+    log: overrides.log ?? (() => {}),
+    pools: normalizePools(overrides.pools),
+    timeoutMinutes: overrides.timeoutMinutes ?? 30,
+    pollSeconds: overrides.pollSeconds ?? 2,
+    integrationWaitSeconds: overrides.integrationWaitSeconds ?? 60,
+    noOperationLimit: overrides.noOperationLimit ?? 2,
+    maxReworks: overrides.maxReworks ?? 2,
+    parentModel: overrides.parentModel ?? null,
+    taskModel: overrides.taskModel ?? null,
+    effort: overrides.effort ?? null,
+    parentAllowTools: overrides.parentAllowTools ?? [...DEFAULT_PARENT_ALLOW_TOOLS],
+    parentDenyTools: overrides.parentDenyTools ?? [...DEFAULT_DENY_TOOLS],
+    taskAllowTools: overrides.taskAllowTools ?? [...DEFAULT_TASK_ALLOW_TOOLS],
+    taskDenyTools: overrides.taskDenyTools ?? [...DEFAULT_DENY_TOOLS],
+  };
+}
+
+function requireCapabilities(config) {
+  if (config.capabilities === null) {
+    throw new CapabilityError("copilot の能力検出が済んでいません。driver/cli.mjs doctor で確認してください。");
+  }
+  if (config.capabilities.prompt === null) {
+    throw new CapabilityError("非対話プロンプトのスイッチが見つかりません。driver は起動できません。");
+  }
+  return config.capabilities;
+}
+
+export async function initRun(config, input = {}) {
+  requireCapabilities(config);
+  const startDir = path.resolve(input.repoPath ?? config.cwd);
+  const { repoPath, commonDir } = await resolveRepoContext(startDir);
+  const targetBranch = input.targetBranch ?? (await resolveTargetBranch(repoPath));
+  const targetWorktree = path.resolve(input.targetWorktree ?? repoPath);
+  const baseCommit = await resolveCommit(repoPath, input.baseCommit ?? "HEAD");
+  if (baseCommit === null) throw new Error("起点コミットを解決できません。");
+
+  const runId = input.runId ?? newRunId();
+  const layout = await ensureRunLayout(runId, config.home);
+  const run = await writeRun(layout, {
+    version: 1,
+    runId,
+    state: RUN_STATE.RUNNING,
+    request: input.request ?? "",
+    repoPath,
+    commonDir,
+    targetBranch,
+    targetRef: input.targetRef ?? `refs/heads/${targetBranch}`,
+    targetWorktree,
+    baseCommit,
+    pools: config.pools,
+    timeoutMinutes: config.timeoutMinutes,
+    toolPolicy: {
+      parentAllow: config.parentAllowTools,
+      parentDeny: config.parentDenyTools,
+      taskAllow: config.taskAllowTools,
+      taskDeny: config.taskDenyTools,
+    },
+    driverPid: process.pid,
+    driverStartedAt: new Date().toISOString(),
+    nextEventId: 1,
+    snapshotRevision: 0,
+    createdAt: new Date().toISOString(),
+    stopDetail: null,
+    stopMessage: null,
+    finishedAt: null,
+  });
+  await appendEvent(layout, { type: "run-created", runId, repoPath, targetBranch, targetWorktree, baseCommit, request: run.request });
+  return { runId, layout, run: await readRun(layout) };
+}
+
+async function resolveTargetBranch(repoPath) {
+  const branch = await currentBranch(repoPath);
+  if (typeof branch !== "string" || branch === "") throw new Error("ターゲットブランチを特定できません。--target で指定してください。");
+  return branch;
+}
+
+export async function loadContext(config, runId, options = {}) {
+  const layout = runLayout(runId, config.home);
+  const run = await readRun(layout);
+  if (run === null) throw new Error(`run ${runId} が見つかりません。`);
+  const tasks = await listTasks(layout);
+  const context = {
+    config,
+    layout,
+    run,
+    tasks,
+    parent: await readParent(layout),
+    events: [],
+    live: new Map(),
+    registry: createSessionRegistry(),
+    presentedRevision: null,
+    replaceTask(next) {
+      const index = this.tasks.findIndex((task) => task.taskId === next.taskId);
+      if (index === -1) this.tasks.push(next);
+      else this.tasks[index] = next;
+      return next;
+    },
+    findTask(taskId) {
+      return this.tasks.find((task) => task.taskId === taskId) ?? null;
+    },
+  };
+  if (options.recover !== false && run.state === RUN_STATE.RUNNING) {
+    context.recovery = await recover(context);
+  }
+  return context;
+}
+
+async function record(context, event) {
+  const written = await appendEvent(context.layout, event);
+  context.run = await readRun(context.layout);
+  context.events.push(written);
+  return written;
+}
+
+async function setRunState(context, patch) {
+  context.run = await updateRun(context.layout, patch);
+  return context.run;
+}
+
+async function setTaskState(context, task, state, detail, message, extra = {}) {
+  if (task.state !== state && !canTransition(task.state, state)) {
+    await record(context, {
+      type: "task-transition-rejected",
+      taskId: task.taskId,
+      from: task.state,
+      to: state,
+      detail: detail ?? null,
+      message: message ?? null,
+    });
+    return null;
+  }
+  const next = await writeTask(context.layout, { ...task, ...extra, state, detail: detail ?? null, message: message ?? null });
+  context.replaceTask(next);
+  await record(context, {
+    type: "task-state",
+    taskId: task.taskId,
+    from: task.state,
+    state,
+    detail: detail ?? null,
+    message: message ?? null,
+  });
+  return next;
+}
+
+async function stopRun(context, detail, message) {
+  const stopped = [];
+  for (const entry of context.live.values()) {
+    const outcome = await stopSession(context.registry, entry.attempt, { force: false });
+    stopped.push({ attemptId: entry.attemptId, ...outcome });
+  }
+  context.live.clear();
+  await setRunState(context, {
+    state: RUN_STATE.STOPPED,
+    stopDetail: detail,
+    stopMessage: message,
+    stoppedAt: new Date().toISOString(),
+  });
+  await record(context, { type: "run-stopped", detail, message, stopped });
+  return { detail, message, stopped };
+}
+
+async function finishRun(context, summary) {
+  await setRunState(context, {
+    state: RUN_STATE.FINISHED,
+    stopDetail: null,
+    stopMessage: summary,
+    finishedAt: new Date().toISOString(),
+  });
+  await record(context, { type: "run-finished", summary });
+  return { summary };
+}
+
+/* ------------------------------------------------------------------ 復旧 */
+
+/**
+ * 前回の driver が残した試行の後始末。生きている driver が所有している試行には触れない。
+ * status のような読み取り専用の入口からは呼ばない。
+ */
+export async function recover(context) {
+  const changes = [];
+  const tasks = await listTasks(context.layout);
+  for (const task of tasks) {
+    const attempts = await listAttempts(context.layout, task.taskId);
+    for (const attempt of attempts) {
+      if (attempt.state !== ATTEMPT_STATE.RUNNING) continue;
+      // この driver 自身が起こした試行は、いま走っているので触らない。
+      if (attempt.driverPid === process.pid) continue;
+      const ownerAlive = isProcessAlive(attempt.driverPid);
+      const childAlive = isProcessAlive(attempt.pid);
+      if (ownerAlive) continue;
+      if (childAlive) {
+        await writeAttempt(context.layout, { ...attempt, state: ATTEMPT_STATE.UNKNOWN, note: "driver が消えた後もプロセスが残っています。" });
+        await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.OWNER_UNKNOWN, "担当プロセスの所有権が不明です。手動で確認してください。");
+        changes.push({ attemptId: attempt.attemptId, action: "owner-unknown" });
+      } else {
+        await writeAttempt(context.layout, { ...attempt, state: ATTEMPT_STATE.INTERRUPTED, note: "driver の再起動時に既に終了していました。" });
+        await setTaskState(context, task, TASK_STATE.INTERRUPTED, TASK_DETAIL.STOPPED, "担当プロセスは driver の停止時に終了していました。");
+        changes.push({ attemptId: attempt.attemptId, action: "interrupted" });
+      }
+    }
+    if (task.state === TASK_STATE.VERIFYING) {
+      await setTaskState(context, task, TASK_STATE.SUBMITTED, TASK_DETAIL.INTEGRATION_FAILED, "検証の途中で driver が停止しました。再検証してください。");
+      changes.push({ taskId: task.taskId, action: "verify-interrupted" });
+    } else if (task.state === TASK_STATE.RUNNING) {
+      const stillRunning = (await listAttempts(context.layout, task.taskId)).some((attempt) => attempt.state === ATTEMPT_STATE.RUNNING);
+      if (!stillRunning) {
+        await setTaskState(context, task, TASK_STATE.INTERRUPTED, TASK_DETAIL.STOPPED, "実行中の試行がありません。再開または差し戻しが必要です。");
+        changes.push({ taskId: task.taskId, action: "running-without-attempt" });
+      }
+    }
+  }
+  if (changes.length > 0) await record(context, { type: "recovered", changes });
+  return changes;
+}
+
+/* ------------------------------------------------------------------ 起動 */
+
+async function ensureReportIgnored(worktree) {
+  try {
+    const gitDir = await gitDirOf(worktree);
+    if (gitDir === null || gitDir === "") return false;
+    const file = path.join(gitDir, "info", "exclude");
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const current = await fs.readFile(file, "utf8").catch(() => "");
+    if (current.includes(".agent-run")) return true;
+    await fs.appendFile(file, `${current.endsWith("\n") || current === "" ? "" : "\n"}.agent-run/\n`, "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildTaskPrompt(context, task, attempt, options = {}) {
+  const run = context.run;
+  const lines = [];
+  lines.push(`# 担当タスク: ${task.title}（taskId: ${task.taskId}）`);
+  lines.push("");
+  lines.push("## 作業場所");
+  lines.push("");
+  lines.push(`- 作業ツリー: ${attempt.worktree}`);
+  lines.push(`- ブランチ: ${attempt.branch}`);
+  lines.push(`- 起点コミット: ${attempt.baseCommit}`);
+  lines.push(`- 統合先: ${run.targetBranch}（あなたは統合しない。driver が行う）`);
+  lines.push("");
+  if ((task.dependsOn ?? []).length > 0) {
+    lines.push("## 前提");
+    lines.push("");
+    for (const dependency of task.dependsOn) {
+      const record = context.findTask(dependency);
+      lines.push(`- ${dependency} は ${record?.state ?? "不明"} です（統合済みの内容が起点に入っています）。`);
+    }
+    lines.push("");
+  }
+  lines.push("## 依頼");
+  lines.push("");
+  lines.push(task.prompt);
+  lines.push("");
+  if (options.answer !== undefined) {
+    lines.push("## driver からの回答");
+    lines.push("");
+    lines.push(options.answer);
+    lines.push("");
+  }
+  if (options.instruction !== undefined) {
+    lines.push("## driver からの差し戻し指示");
+    lines.push("");
+    lines.push(options.instruction);
+    lines.push("");
+  }
+  lines.push("## 守ること");
+  lines.push("");
+  lines.push("- 変更は必ずこの作業ツリーの中でコミットまで済ませてください。");
+  lines.push("- リポジトリ本体の作業ツリーや、他の担当の作業ツリーを変更しないでください。");
+  lines.push("- ターゲットブランチへの merge・push・rebase はしないでください。");
+  lines.push("- 実行していないテストを合格として報告しないでください。");
+  lines.push("");
+  lines.push(reportInstructions({ taskId: task.taskId, attemptId: attempt.attemptId }));
+  return lines.join("\n");
+}
+
+function buildParentPrompt(context, presented, attention = parentAttention(context)) {
+  const run = context.run;
+  const lines = [];
+  lines.push("# 並列開発の親セッション");
+  lines.push("");
+  lines.push(`- 実行 ID: ${run.runId}`);
+  lines.push(`- リポジトリ: ${run.repoPath}`);
+  lines.push(`- 統合先: ${run.targetBranch}（${run.targetWorktree}）`);
+  lines.push(`- 起動時点の HEAD: ${run.baseCommit}`);
+  lines.push(`- 実行枠: 担当 ${run.pools.tasks} / 検証 ${run.pools.verify} / 統合 ${run.pools.integration}`);
+  lines.push("");
+  lines.push("## 依頼された目的");
+  lines.push("");
+  lines.push(run.request === "" ? "(指定なし)" : run.request);
+  lines.push("");
+  lines.push("## タスクの状況");
+  lines.push("");
+  if (context.tasks.length === 0) {
+    lines.push("(タスクはまだありません。DISPATCH で担当を起こしてください。)");
+  } else {
+    for (const task of context.tasks) {
+      const parts = [`- ${task.taskId} [${task.state}] ${task.title}`];
+      if (task.detail !== null && task.detail !== undefined) parts.push(`詳細=${task.detail}`);
+      if (task.submittedHead) parts.push(`提出=${String(task.submittedHead).slice(0, 12)}`);
+      if (task.integration?.state) parts.push(`統合=${task.integration.state}`);
+      if ((task.dependsOn ?? []).length > 0) parts.push(`依存=${task.dependsOn.join(",")}`);
+      if (task.attemptCount) parts.push(`試行=${task.attemptCount}`);
+      lines.push(parts.join(" "));
+      if (task.message) lines.push(`  理由: ${task.message}`);
+      if (task.question) lines.push(`  質問: ${task.question}`);
+    }
+  }
+  lines.push("");
+  lines.push("## 判断が必要なこと");
+  lines.push("");
+  if (attention.length === 0) {
+    lines.push("(なし)");
+  } else {
+    for (const item of attention) {
+      lines.push(`- ${item.taskId ?? "(全体)"}: ${item.reason}${item.question ? ` — ${item.question}` : ""}`);
+    }
+  }
+  lines.push("");
+  lines.push("## 判断の指針");
+  lines.push("");
+  lines.push("- タスクが無い、または依存の無い作業が残っているなら DISPATCH で担当を起こす。");
+  lines.push("- 質問には ANSWER、行き詰まりには REWORK、提出の検証には CHECK_MERGE を出す。");
+  lines.push("- CHECK_MERGE が VERIFIED_NOT_PUBLISHED を返したときだけ APPLY_MERGE を出す。");
+  lines.push("- 全タスクが INTEGRATED になったら FINISH を出す。");
+  lines.push("- 人間の判断が要るなら REQUEST_HUMAN を出して止める。");
+  lines.push("");
+  lines.push(protocolInstructions({ snapshotRevision: presented, taskIds: context.tasks.map((task) => task.taskId) }));
+  return lines.join("\n");
+}
+
+function parentAttention(context) {
+  const items = [];
+  for (const task of context.tasks) {
+    if (task.state === TASK_STATE.NEEDS_PARENT) {
+      items.push({ kind: "question", taskId: task.taskId, reason: "担当が質問しています", question: task.question ?? "" });
+      continue;
+    }
+    if (task.state === TASK_STATE.SUBMITTED && task.integration?.state !== INTEGRATION_STATE.INTEGRATED) {
+      // 検証前は CHECK_MERGE、検証済みで未反映なら APPLY_MERGE を親に判断してもらう。
+      const reason = task.integration?.state === INTEGRATION_STATE.VERIFIED_NOT_PUBLISHED
+        ? "検証済みの候補があります（APPLY_MERGE か差し戻し）"
+        : "提出の検証が必要です（CHECK_MERGE）";
+      items.push({ kind: "integration", taskId: task.taskId, reason });
+      continue;
+    }
+    if (PARENT_ATTENTION_STATES.has(task.state) && Number(task.reworkCount ?? 0) < context.config.maxReworks) {
+      items.push({
+        kind: "stalled",
+        taskId: task.taskId,
+        reason: `${task.state} のまま止まっています（REWORK か REQUEST_HUMAN）`,
+        question: task.message ?? "",
+      });
+    }
+  }
+  if (context.tasks.length === 0) {
+    items.push({ kind: "dispatch", taskId: null, reason: "タスクがありません（DISPATCH）" });
+    return items;
+  }
+  // 完了の宣言は親に出す。一度だけ尋ね、答えが無ければ driver が受け入れ状態で終了する。
+  if (context.tasks.every((task) => task.state === TASK_STATE.INTEGRATED) && context.parent?.finishAsked !== true) {
+    items.push({ kind: "finish", taskId: null, reason: "全タスクが統合済みです（FINISH で終了を宣言してください）" });
+  }
+  return items;
+}
+
+async function startAttempt(context, task, options = {}) {
+  const config = context.config;
+  const run = context.run;
+  const capabilities = requireCapabilities(config);
+  const kind = options.kind ?? "initial";
+  const index = Number(task.attemptCount ?? 0) + 1;
+  const attemptId = `${task.taskId}-a${index}`;
+  const shortRun = String(run.runId).slice(0, 8);
+  const reuseWorktree = options.reuseWorktree === true && typeof task.worktree === "string" && task.worktree !== "";
+  const worktree = reuseWorktree ? task.worktree : path.join(worktreesRoot(run.repoPath), `${shortRun}-${task.taskId}-a${index}`);
+  const branch = reuseWorktree ? task.branch : `agent-task/${shortRun}/${task.taskId}-a${index}`;
+  const baseCommit = reuseWorktree
+    ? task.baseCommit
+    : await resolveDispatchBase(context, task, options);
+
+  const resumeSessionId = options.resumeSessionId ?? null;
+  const sessionId = resumeSessionId ?? crypto.randomUUID();
+  if (resumeSessionId !== null && capabilities.resume === null) {
+    await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.SESSION_LOST, "この copilot には --resume がありません。再開できません。");
+    return { started: false, detail: TASK_DETAIL.SESSION_LOST };
+  }
+
+  if (!reuseWorktree) {
+    try {
+      await addWorktree(run.repoPath, worktree, { newBranch: branch, base: baseCommit });
+    } catch (error) {
+      await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.WORKTREE_MISSING, `作業ツリーを作れません: ${error.message}`);
+      return { started: false, detail: TASK_DETAIL.WORKTREE_MISSING };
+    }
+    await ensureReportIgnored(worktree);
+  }
+
+  const attempt = {
+    attemptId,
+    taskId: task.taskId,
+    index,
+    kind,
+    state: ATTEMPT_STATE.RUNNING,
+    worktree,
+    branch,
+    baseCommit,
+    sessionId,
+    resumedFrom: resumeSessionId,
+    driverPid: process.pid,
+    pid: null,
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    exitCode: null,
+    timedOut: false,
+    logFile: path.join(context.layout.logs, `${attemptId}.log`),
+    promptFile: null,
+    classification: null,
+  };
+
+  const promptText = buildTaskPrompt(context, task, attempt, options);
+  attempt.promptFile = await writePromptFile(worktree, promptText, `${attemptId}.prompt.md`);
+
+  let args;
+  try {
+    args = buildArgs(capabilities, {
+      promptReference: promptReference(attempt.promptFile),
+      sessionId: resumeSessionId === null ? sessionId : null,
+      resumeSessionId,
+      allowTools: config.taskAllowTools,
+      denyTools: config.taskDenyTools,
+      model: config.taskModel,
+      effort: config.effort,
+    });
+  } catch (error) {
+    await writeAttempt(context.layout, attempt);
+    await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.LAUNCH_FAILED, error.message);
+    return { started: false, detail: TASK_DETAIL.LAUNCH_FAILED };
+  }
+  attempt.args = args;
+  const spawnArgs = [...config.commandArgs, ...args];
+
+  await writeAttempt(context.layout, attempt);
+  await setTaskState(context, task, TASK_STATE.RUNNING, null, `試行 ${index} を起動しました。`, {
+    attemptCount: index,
+    currentAttemptId: attemptId,
+    worktree,
+    branch,
+    baseCommit,
+    sessionId,
+    question: null,
+  });
+
+  const entry = { attemptId, taskId: task.taskId, attempt, settled: null, startedAt: attempt.startedAt };
+  const promise = runSession({
+    command: config.command,
+    args: spawnArgs,
+    cwd: worktree,
+    logFile: attempt.logFile,
+    timeoutMs: config.timeoutMinutes * 60_000,
+    registry: context.registry,
+    attemptId,
+    onSpawn: async (spawned) => {
+      entry.attempt.pid = spawned.pid;
+      const saved = await writeAttempt(context.layout, { ...attempt, pid: spawned.pid });
+      await record(context, { type: "attempt-spawned", attemptId, taskId: task.taskId, pid: spawned.pid, startedAt: saved.startedAt });
+    },
+  }).then(
+    (result) => {
+      entry.settled = { ok: true, result };
+    },
+    (error) => {
+      entry.settled = { ok: false, error };
+    },
+  );
+  entry.promise = promise;
+  context.live.set(attemptId, entry);
+
+  await record(context, {
+    type: "attempt-started",
+    attemptId,
+    taskId: task.taskId,
+    kind,
+    worktree,
+    branch,
+    baseCommit,
+    sessionId,
+    resumedFrom: resumeSessionId,
+    pid: null,
+  });
+  return { started: true, attemptId, worktree, branch, baseCommit, sessionId };
+}
+
+async function resolveDispatchBase(context, task, options) {
+  if (typeof task.base === "string" && task.base !== "") {
+    const pinned = await resolveCommit(context.run.repoPath, task.base);
+    if (pinned === null) throw new Error(`task.base ${task.base} をコミットとして解決できません。`);
+    return pinned;
+  }
+  if (typeof options.baseCommit === "string" && options.baseCommit !== "") return options.baseCommit;
+  const head = await revParseOrNull(context.run.targetWorktree, "HEAD");
+  if (head !== null) return head;
+  const fallback = await revParseOrNull(context.run.repoPath, context.run.targetRef);
+  if (fallback !== null) return fallback;
+  return context.run.baseCommit;
+}
+
+/* ------------------------------------------------------------------ 回収 */
+
+async function reap(context) {
+  const finished = [];
+  for (const [attemptId, entry] of [...context.live.entries()]) {
+    if (entry.settled === null) continue;
+    context.live.delete(attemptId);
+    finished.push(await collectAttempt(context, entry));
+  }
+  return finished;
+}
+
+async function collectAttempt(context, entry) {
+  const layout = context.layout;
+  const task = context.findTask(entry.taskId);
+  const attempt = (await readAttempt(layout, entry.attemptId)) ?? entry.attempt;
+
+  if (!entry.settled.ok) {
+    const message = entry.settled.error?.message ?? "起動できませんでした。";
+    await writeAttempt(layout, { ...attempt, state: ATTEMPT_STATE.UNKNOWN, endedAt: new Date().toISOString(), error: message });
+    if (task !== null) await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.LAUNCH_FAILED, message);
+    await record(context, { type: "attempt-finished", attemptId: attempt.attemptId, taskId: attempt.taskId, state: TASK_STATE.NEEDS_HUMAN, detail: TASK_DETAIL.LAUNCH_FAILED, message });
+    return { attemptId: attempt.attemptId, taskId: attempt.taskId, state: TASK_STATE.NEEDS_HUMAN, detail: TASK_DETAIL.LAUNCH_FAILED };
+  }
+
+  const result = entry.settled.result;
+  const report = await readReport(attempt.worktree);
+  const head = await revParseOrNull(attempt.worktree, "HEAD");
+  let clean = null;
+  try {
+    clean = await isClean(attempt.worktree);
+  } catch {
+    clean = null;
+  }
+  const classification = classifyAttempt({
+    attempt: { ...attempt, exitCode: result.exitCode, timedOut: result.timedOut },
+    report,
+    git: { head, clean, baseCommit: attempt.baseCommit },
+    outputText: `${result.stdout}\n${result.stderr}`,
+  });
+
+  const sessionId = extractSessionId(result.stdout) ?? attempt.sessionId;
+  const saved = await writeAttempt(layout, {
+    ...attempt,
+    state: ATTEMPT_TO_TASK_STATE[classification.state] ?? ATTEMPT_STATE.UNKNOWN,
+    pid: result.pid,
+    endedAt: result.endedAt,
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    sessionId,
+    classification,
+    stdoutBytes: result.stdout.length,
+    stderrBytes: result.stderr.length,
+  });
+  await archiveReport(layout, attempt.attemptId, { attempt: saved, classification, report: report.value }, report.rawText ?? "");
+
+  await record(context, {
+    type: "attempt-finished",
+    attemptId: attempt.attemptId,
+    taskId: attempt.taskId,
+    state: classification.state,
+    detail: classification.detail,
+    message: classification.message,
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    permissionHint: classification.permissionHint,
+    reportHash: classification.reportHash,
+    submittedHead: classification.submittedHead ?? null,
+  });
+
+  if (task !== null) {
+    await setTaskState(context, task, classification.state, classification.detail, classification.message, {
+      lastAttemptId: attempt.attemptId,
+      sessionId,
+      submittedHead: classification.submittedHead ?? task.submittedHead ?? null,
+      question: classification.question ?? null,
+      tests: classification.tests,
+    });
+  }
+  return {
+    attemptId: attempt.attemptId,
+    taskId: attempt.taskId,
+    state: classification.state,
+    detail: classification.detail,
+    message: classification.message,
+  };
+}
+
+/* ------------------------------------------------------------------ 統合 */
+
+export async function integrateTask(context, task, mode) {
+  const config = context.config;
+  const run = context.run;
+  if (typeof task.submittedHead !== "string" || task.submittedHead === "") {
+    await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.SUBMITTED_HEAD_MISSING, "提出コミットが記録されていません。");
+    return { state: TASK_STATE.NEEDS_HUMAN, detail: TASK_DETAIL.SUBMITTED_HEAD_MISSING };
+  }
+  const integrationId = task.integrationId ?? `int-${task.taskId}`;
+  const dependsOn = [];
+  for (const dependency of task.dependsOn ?? []) {
+    const record_ = context.findTask(dependency);
+    if (record_?.integrationId) dependsOn.push(record_.integrationId);
+  }
+
+  const targetHead = (await revParseOrNull(run.targetWorktree, "HEAD")) ?? run.baseCommit;
+  let existing = await readRegisteredOperation(integrationId, { env: config.env });
+
+  if (existing !== null && existing.state === LEDGER_STATE.INTEGRATED) {
+    await setTaskState(context, task, TASK_STATE.INTEGRATED, null, "台帳では既に統合済みです。", {
+      integrationId,
+      integration: { integrationId, mode, state: INTEGRATION_STATE.INTEGRATED, detail: "already-integrated", at: new Date().toISOString() },
+    });
+    return { state: TASK_STATE.INTEGRATED, detail: "already-integrated" };
+  }
+
+  const needsRegister =
+    existing === null ||
+    existing.submittedHead !== task.submittedHead ||
+    existing.expectedTargetHead !== targetHead ||
+    (existing.dependsOn ?? []).join(",") !== dependsOn.join(",");
+  if (needsRegister) {
+    if (existing !== null) await removeOperation(integrationId, { env: config.env });
+    try {
+      await registerOperation(
+        {
+          operationId: integrationId,
+          repoPath: run.repoPath,
+          targetBranch: run.targetBranch,
+          targetRef: run.targetRef,
+          targetWorktree: run.targetWorktree,
+          submittedHead: task.submittedHead,
+          expectedTargetHead: targetHead,
+          dependsOn,
+          childSessionId: task.sessionId ?? null,
+        },
+        { env: config.env },
+      );
+    } catch (error) {
+      await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.INTEGRATION_FAILED, `受付を登録できません: ${error.message}`);
+      return { state: TASK_STATE.NEEDS_HUMAN, detail: TASK_DETAIL.INTEGRATION_FAILED, message: error.message };
+    }
+  }
+
+  const scope = verifySlotScope(run.commonDir);
+  const lock = await acquireScopeLock(context.layout, scope, {
+    owner: integrationId,
+    purpose: `integrate:${mode}`,
+    waitSeconds: config.integrationWaitSeconds,
+  });
+  if (!lock.acquired) {
+    await record(context, { type: "integration-wait", taskId: task.taskId, integrationId, mode, owner: lock.owner ?? null });
+    return { state: task.state, detail: TASK_DETAIL.TARGET_BUSY, message: "検証枠が埋まっています。時間をおいて再実行します。" };
+  }
+
+  const previousState = task.state;
+  if (previousState !== TASK_STATE.VERIFYING) {
+    await setTaskState(context, task, TASK_STATE.VERIFYING, null, `${mode} を実行しています。`, { integrationId });
+  }
+  try {
+    const engineRun = createIntegrationRun(createPorts(config));
+    const outcome = await engineRun({ args: { operationId: integrationId, mode }, log: config.log });
+    const mapped = INTEGRATION_TO_TASK_STATE[outcome.state] ?? TASK_STATE.NEEDS_PARENT;
+    const integration = {
+      integrationId,
+      mode,
+      state: outcome.state,
+      detail: outcome.detail,
+      message: outcome.message,
+      candidateHead: outcome.candidateHead ?? null,
+      evidenceRef: outcome.evidenceRef ?? null,
+      expectedTargetHead: targetHead,
+      at: new Date().toISOString(),
+    };
+    await record(context, {
+      type: "integration-result",
+      taskId: task.taskId,
+      integrationId,
+      mode,
+      state: outcome.state,
+      detail: outcome.detail,
+      candidateHead: integration.candidateHead,
+      evidenceRef: integration.evidenceRef,
+    });
+    const current = context.findTask(task.taskId) ?? task;
+    await setTaskState(
+      context,
+      current,
+      mapped,
+      mapped === TASK_STATE.INTEGRATED ? null : outcome.detail ?? TASK_DETAIL.INTEGRATION_FAILED,
+      outcome.message ?? null,
+      { integrationId, integration },
+    );
+    return { state: mapped, detail: outcome.detail, message: outcome.message, candidateHead: integration.candidateHead };
+  } finally {
+    await releaseScopeLock(context.layout, scope, integrationId);
+  }
+}
+
+function createPorts(config) {
+  return createProjectPorts({ env: config.env, log: config.log });
+}
+
+/* ------------------------------------------------------------------ 操作 */
+
+export async function applyOperation(context, operation) {
+  const layout = context.layout;
+  const existing = await readOperationRecord(layout, operation.operationId);
+  if (existing !== null) {
+    await record(context, {
+      type: "operation-rejected",
+      operationId: operation.operationId,
+      kind: operation.kind,
+      detail: TASK_DETAIL.OPERATION_DUPLICATE,
+      message: "同じ operationId を既に受け取っています。",
+    });
+    return { status: "rejected", detail: TASK_DETAIL.OPERATION_DUPLICATE };
+  }
+
+  const presented = context.presentedRevision ?? context.run.snapshotRevision;
+  if (operation.snapshotRevision !== presented) {
+    const record_ = await writeOperationRecord(layout, {
+      operationId: operation.operationId,
+      kind: operation.kind,
+      taskId: operation.taskId,
+      snapshotRevision: operation.snapshotRevision,
+      receivedAt: new Date().toISOString(),
+      status: "rejected",
+      detail: TASK_DETAIL.SNAPSHOT_STALE,
+      presentedRevision: presented,
+      payload: operation.payload,
+    });
+    await record(context, {
+      type: "operation-rejected",
+      operationId: operation.operationId,
+      kind: operation.kind,
+      detail: TASK_DETAIL.SNAPSHOT_STALE,
+      message: `提案の snapshotRevision ${operation.snapshotRevision} は提示した ${presented} と一致しません。`,
+    });
+    return { status: "rejected", detail: TASK_DETAIL.SNAPSHOT_STALE, record: record_ };
+  }
+
+  const rejected = async (detail, message) => {
+    await writeOperationRecord(layout, {
+      operationId: operation.operationId,
+      kind: operation.kind,
+      taskId: operation.taskId,
+      snapshotRevision: operation.snapshotRevision,
+      receivedAt: new Date().toISOString(),
+      status: "rejected",
+      detail,
+      message,
+      payload: operation.payload,
+    });
+    await record(context, { type: "operation-rejected", operationId: operation.operationId, kind: operation.kind, taskId: operation.taskId, detail, message });
+    return { status: "rejected", detail, message };
+  };
+
+  const task = operation.taskId === null ? null : context.findTask(operation.taskId);
+  if (operation.taskId !== null && task === null && operation.kind !== OPERATION_KIND.DISPATCH) {
+    return await rejected(TASK_DETAIL.TASK_NOT_FOUND, `taskId ${operation.taskId} は存在しません。`);
+  }
+
+  switch (operation.kind) {
+    case OPERATION_KIND.DISPATCH: {
+      const taskId = operation.taskId ?? nextTaskId(context);
+      if (context.findTask(taskId) !== null) {
+        return await rejected(TASK_DETAIL.OPERATION_INVALID, `taskId ${taskId} は既に存在します。`);
+      }
+      const created = await writeTask(layout, {
+        taskId,
+        title: operation.payload.title,
+        prompt: operation.payload.prompt,
+        dependsOn: operation.payload.dependsOn,
+        base: operation.payload.base ?? null,
+        state: TASK_STATE.PLANNED,
+        detail: null,
+        message: null,
+        attemptCount: 0,
+        reworkCount: 0,
+        currentAttemptId: null,
+        lastAttemptId: null,
+        submittedHead: null,
+        sessionId: null,
+        worktree: null,
+        branch: null,
+        baseCommit: null,
+        integrationId: null,
+        integration: null,
+        question: null,
+        createdAt: new Date().toISOString(),
+      });
+      context.replaceTask(created);
+      await writeOperationRecord(layout, {
+        operationId: operation.operationId,
+        kind: operation.kind,
+        taskId,
+        snapshotRevision: operation.snapshotRevision,
+        receivedAt: new Date().toISOString(),
+        status: "applied",
+        payload: operation.payload,
+      });
+      await record(context, { type: "operation-applied", operationId: operation.operationId, kind: operation.kind, taskId });
+      return { status: "applied", taskId, detail: null };
+    }
+
+    case OPERATION_KIND.ANSWER: {
+      if (task.state !== TASK_STATE.NEEDS_PARENT) {
+        return await rejected(TASK_DETAIL.TASK_STATE_INVALID, `taskId ${task.taskId} は ${task.state} です。質問待ちではありません。`);
+      }
+      if (typeof task.sessionId !== "string" || task.sessionId === "") {
+        await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.SESSION_LOST, "再開するセッション ID がありません。");
+        return await rejected(TASK_DETAIL.SESSION_LOST, "再開するセッション ID がありません。");
+      }
+      await writeOperationRecord(layout, {
+        operationId: operation.operationId,
+        kind: operation.kind,
+        taskId: task.taskId,
+        snapshotRevision: operation.snapshotRevision,
+        receivedAt: new Date().toISOString(),
+        status: "applied",
+        payload: operation.payload,
+      });
+      await record(context, { type: "operation-applied", operationId: operation.operationId, kind: operation.kind, taskId: task.taskId });
+      const started = await startAttempt(context, task, { kind: "answer", reuseWorktree: true, resumeSessionId: task.sessionId, answer: operation.payload.answer });
+      return { status: "applied", taskId: task.taskId, detail: null, started };
+    }
+
+    case OPERATION_KIND.REWORK: {
+      if (!RESUMABLE_STATES.has(task.state)) {
+        return await rejected(TASK_DETAIL.TASK_STATE_INVALID, `taskId ${task.taskId} は ${task.state} です。差し戻せません。`);
+      }
+      if (Number(task.reworkCount ?? 0) >= context.config.maxReworks) {
+        return await rejected(TASK_DETAIL.TASK_STATE_INVALID, `taskId ${task.taskId} の差し戻しが上限（${context.config.maxReworks}）に達しています。`);
+      }
+      const reset = operation.payload.resetWorktree || task.state === TASK_STATE.STALE_TARGET;
+      const resume = reset || typeof task.sessionId !== "string" || task.sessionId === "" ? null : task.sessionId;
+      await writeOperationRecord(layout, {
+        operationId: operation.operationId,
+        kind: operation.kind,
+        taskId: task.taskId,
+        snapshotRevision: operation.snapshotRevision,
+        receivedAt: new Date().toISOString(),
+        status: "applied",
+        payload: operation.payload,
+      });
+      await record(context, { type: "operation-applied", operationId: operation.operationId, kind: operation.kind, taskId: task.taskId, resetWorktree: reset });
+      const prepared = await writeTask(layout, {
+        ...task,
+        reworkCount: Number(task.reworkCount ?? 0) + 1,
+        integration: null,
+        integrationId: reset ? null : task.integrationId,
+        submittedHead: reset ? null : task.submittedHead,
+      });
+      context.replaceTask(prepared);
+      const started = await startAttempt(context, prepared, {
+        kind: "rework",
+        reuseWorktree: !reset,
+        resumeSessionId: resume,
+        instruction: operation.payload.instruction,
+      });
+      return { status: "applied", taskId: task.taskId, detail: null, started };
+    }
+
+    case OPERATION_KIND.CHECK_MERGE:
+    case OPERATION_KIND.APPLY_MERGE: {
+      const mode = operation.kind === OPERATION_KIND.CHECK_MERGE ? "check" : "apply";
+      if (task.state !== TASK_STATE.SUBMITTED) {
+        return await rejected(TASK_DETAIL.TASK_STATE_INVALID, `taskId ${task.taskId} は ${task.state} です。提出待ちではありません。`);
+      }
+      if (mode === "apply" && task.integration?.state !== INTEGRATION_STATE.VERIFIED_NOT_PUBLISHED) {
+        return await rejected(TASK_DETAIL.TASK_STATE_INVALID, `taskId ${task.taskId} は検証済みではありません。先に CHECK_MERGE が必要です。`);
+      }
+      await writeOperationRecord(layout, {
+        operationId: operation.operationId,
+        kind: operation.kind,
+        taskId: task.taskId,
+        snapshotRevision: operation.snapshotRevision,
+        receivedAt: new Date().toISOString(),
+        status: "applied",
+        payload: operation.payload,
+      });
+      await record(context, { type: "operation-applied", operationId: operation.operationId, kind: operation.kind, taskId: task.taskId, mode });
+      const outcome = await integrateTask(context, task, mode);
+      return { status: "applied", taskId: task.taskId, detail: outcome.detail, integration: outcome };
+    }
+
+    case OPERATION_KIND.REQUEST_HUMAN: {
+      await writeOperationRecord(layout, {
+        operationId: operation.operationId,
+        kind: operation.kind,
+        taskId: operation.taskId,
+        snapshotRevision: operation.snapshotRevision,
+        receivedAt: new Date().toISOString(),
+        status: "applied",
+        payload: operation.payload,
+      });
+      await record(context, { type: "operation-applied", operationId: operation.operationId, kind: operation.kind, taskId: operation.taskId });
+      if (task !== null && task.state !== TASK_STATE.INTEGRATED) {
+        await setTaskState(context, task, TASK_STATE.NEEDS_HUMAN, TASK_DETAIL.HUMAN_REQUESTED, operation.payload.reason);
+      }
+      await stopRun(context, TASK_DETAIL.HUMAN_REQUESTED, operation.payload.reason);
+      return { status: "applied", taskId: operation.taskId, detail: TASK_DETAIL.HUMAN_REQUESTED };
+    }
+
+    case OPERATION_KIND.FINISH: {
+      const unfinished = context.tasks.filter((entry) => entry.state !== TASK_STATE.INTEGRATED);
+      if (unfinished.length > 0) {
+        return await rejected(
+          TASK_DETAIL.OPERATION_INVALID,
+          `未統合のタスクがあります: ${unfinished.map((entry) => `${entry.taskId}(${entry.state})`).join(", ")}`,
+        );
+      }
+      await writeOperationRecord(layout, {
+        operationId: operation.operationId,
+        kind: operation.kind,
+        taskId: null,
+        snapshotRevision: operation.snapshotRevision,
+        receivedAt: new Date().toISOString(),
+        status: "applied",
+        payload: operation.payload,
+      });
+      await record(context, { type: "operation-applied", operationId: operation.operationId, kind: operation.kind });
+      await finishRun(context, operation.payload.summary ?? "親セッションの FINISH により終了しました。");
+      return { status: "applied", detail: null };
+    }
+
+    default: {
+      return await rejected(TASK_DETAIL.OPERATION_INVALID, `未対応の操作種別です: ${operation.kind}`);
+    }
+  }
+}
+
+function nextTaskId(context) {
+  for (let index = context.tasks.length + 1; index < context.tasks.length + 1000; index += 1) {
+    const candidate = `task-${String(index).padStart(3, "0")}`;
+    if (context.findTask(candidate) === null) return candidate;
+  }
+  throw new Error("taskId を採番できません。");
+}
+
+/* ------------------------------------------------------------------ 親 */
+
+async function parentTurn(context) {
+  const config = context.config;
+  const capabilities = requireCapabilities(config);
+  const parent = (await readParent(context.layout)) ?? {
+    sessionId: null,
+    turns: 0,
+    noOperationStreak: 0,
+    lastOperationIds: [],
+    createdAt: new Date().toISOString(),
+  };
+  const turn = Number(parent.turns ?? 0) + 1;
+  // 提示する revision は「このプロンプトを作った時点」に固定する。
+  // プロンプト作成後に記録するイベントは revision を進めるが、親が提案に使う値は presented である。
+  const presented = context.run.snapshotRevision;
+  context.presentedRevision = presented;
+  const attention = parentAttention(context);
+  const promptText = buildParentPrompt(context, presented, attention);
+  // 完了の宣言は親に一度だけ尋ねる。次のステップで同じ問いを繰り返さない。
+  if (attention.some((item) => item.kind === "finish")) parent.finishAsked = true;
+  // 親セッションの cwd はリポジトリ本体なので、読める場所に置く。
+  // 台帳側には同じ内容を記録として残す。
+  const parentPromptDir = path.join(config.cwd, ".agent-run");
+  await fs.mkdir(parentPromptDir, { recursive: true });
+  await ensureReportIgnored(config.cwd);
+  const promptFile = path.join(parentPromptDir, `parent-prompt-${turn}.md`);
+  await fs.writeFile(promptFile, promptText, "utf8");
+  const archivedPrompt = path.join(context.layout.base, `parent-prompt-${turn}.md`);
+  await fs.writeFile(archivedPrompt, promptText, "utf8");
+
+  const resume = parent.sessionId !== null;
+  const sessionId = parent.sessionId ?? crypto.randomUUID();
+  let args;
+  try {
+    args = buildArgs(capabilities, {
+      promptReference: promptReference(promptFile),
+      sessionId: resume ? null : sessionId,
+      resumeSessionId: resume ? sessionId : null,
+      allowTools: config.parentAllowTools,
+      denyTools: config.parentDenyTools,
+      model: config.parentModel,
+      effort: config.effort,
+    });
+  } catch (error) {
+    const detail = error instanceof CapabilityError ? TASK_DETAIL.SESSION_LOST : TASK_DETAIL.LAUNCH_FAILED;
+    await stopRun(context, detail, error.message);
+    return { turn, stopped: true, detail, message: error.message };
+  }
+
+  const logFile = path.join(context.layout.logs, `parent-${turn}.log`);
+  await record(context, { type: "parent-session-started", turn, resume, sessionId, presentedRevision: presented, promptFile, archivedPrompt });
+  const result = await runSession({
+    command: config.command,
+    args: [...config.commandArgs, ...args],
+    cwd: config.cwd,
+    logFile,
+    timeoutMs: config.timeoutMinutes * 60_000,
+    registry: context.registry,
+    attemptId: `parent-${turn}`,
+  });
+
+  const parsed = parseOperationBlocksFromOutput(result.stdout);
+  const detected = extractSessionId(result.stdout) ?? sessionId;
+  const outcomes = [];
+  for (const candidate of parsed.operations) {
+    const validation = validateOperation(candidate, { knownTaskIds: context.tasks.map((task) => task.taskId) });
+    if (!validation.ok) {
+      await record(context, {
+        type: "operation-rejected",
+        kind: candidate?.kind ?? null,
+        operationId: typeof candidate?.operationId === "string" ? candidate.operationId : null,
+        detail: validation.detail,
+        message: validation.message,
+        body: JSON.stringify(candidate).slice(0, 400),
+      });
+      outcomes.push({ status: "rejected", detail: validation.detail, message: validation.message });
+      continue;
+    }
+    const outcome = await applyOperation(context, validation.operation);
+    outcomes.push({ ...outcome, kind: validation.operation.kind, operationId: validation.operation.operationId, description: describeOperation(validation.operation) });
+  }
+  for (const error of parsed.errors) {
+    await record(context, { type: "operation-rejected", detail: TASK_DETAIL.OPERATION_INVALID, message: error.message, body: error.body });
+  }
+
+  const applied = outcomes.filter((outcome) => outcome.status === "applied").length;
+  const noOperationStreak = applied > 0 ? 0 : Number(parent.noOperationStreak ?? 0) + 1;
+  const saved = await writeParent(context.layout, {
+    ...parent,
+    sessionId: detected,
+    turns: turn,
+    noOperationStreak,
+    lastOperationIds: outcomes.filter((outcome) => outcome.status === "applied" && outcome.operationId).map((outcome) => outcome.operationId),
+    lastRevision: presented,
+    lastExitCode: result.exitCode,
+    lastEndedAt: result.endedAt,
+  });
+  context.parent = saved;
+  await record(context, {
+    type: "parent-session-finished",
+    turn,
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    operationBlocks: parsed.operations.length,
+    parseErrors: parsed.errors.length,
+    applied,
+    rejected: outcomes.length - applied,
+    source: parsed.source,
+  });
+
+  // 再開できていないのに「再開成功」にしない。
+  if (resume && result.exitCode !== 0 && parsed.operations.length === 0) {
+    await stopRun(context, TASK_DETAIL.SESSION_LOST, `親セッション ${sessionId} を再開できませんでした（終了コード ${result.exitCode}）。`);
+    return { turn, stopped: true, detail: TASK_DETAIL.SESSION_LOST, outcomes };
+  }
+  if (noOperationStreak >= config.noOperationLimit) {
+    await stopRun(
+      context,
+      TASK_DETAIL.NO_OPERATION,
+      `親セッションが ${noOperationStreak} 回続けて操作を提案しませんでした。現在の状態を添えて停止します。`,
+    );
+    return { turn, stopped: true, detail: TASK_DETAIL.NO_OPERATION, outcomes };
+  }
+  return { turn, stopped: false, applied, rejected: outcomes.length - applied, parent: saved };
+}
+
+/* ------------------------------------------------------------------ ループ */
+
+export async function step(context) {
+  if (context.run.state !== RUN_STATE.RUNNING) return { action: "run-stopped", detail: context.run.state };
+
+  const stopRequest = await readStopRequest(context);
+  if (stopRequest !== null) {
+    const outcome = await stopRun(context, TASK_DETAIL.STOPPED, stopRequest.reason ?? "停止要求を受け取りました。");
+    return { action: "run-stopped", detail: outcome };
+  }
+
+  const finished = await reap(context);
+  if (finished.length > 0) return { action: "reaped", detail: finished };
+
+  const attention = parentAttention(context);
+  if (attention.length > 0) {
+    const outcome = await parentTurn(context);
+    // 親の FINISH で終わった場合は、完了として記録する。
+    if (context.run.state === RUN_STATE.FINISHED) {
+      return { action: "finished", detail: { summary: context.run.stopMessage } };
+    }
+    return { action: "parent-turn", detail: { attention: attention.length, ...outcome } };
+  }
+
+  const ready = pendingDispatches(context.tasks, context.run.pools ?? context.config.pools);
+  if (ready.length > 0) {
+    const started = [];
+    for (const task of ready) started.push(await startAttempt(context, task, { kind: "initial" }));
+    if (context.live.size > 0) return { action: "dispatched", detail: started };
+  }
+
+  if (context.live.size > 0) return { action: "waiting", detail: { live: [...context.live.keys()] } };
+
+  const unfinished = context.tasks.filter((task) => task.state !== TASK_STATE.INTEGRATED);
+  if (unfinished.length === 0) {
+    const outcome = await finishRun(context, "全タスクが統合されました。");
+    return { action: "finished", detail: outcome };
+  }
+  const detail = unfinished.some((task) => task.state === TASK_STATE.NEEDS_HUMAN) ? TASK_DETAIL.HUMAN_REQUESTED : TASK_DETAIL.TASKS_UNFINISHED;
+  const outcome = await stopRun(
+    context,
+    detail,
+    `未完了のタスクがあります: ${unfinished.map((task) => `${task.taskId}(${task.state})`).join(", ")}`,
+  );
+  return { action: "run-stopped", detail: outcome };
+}
+
+async function readStopRequest(context) {
+  try {
+    const text = await fs.readFile(path.join(context.layout.base, STOP_REQUEST_FILE), "utf8");
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+export async function requestStop(context, reason) {
+  const file = path.join(context.layout.base, STOP_REQUEST_FILE);
+  const payload = { requestedAt: new Date().toISOString(), requestedByPid: process.pid, reason: reason ?? "停止要求" };
+  await fs.writeFile(file, JSON.stringify(payload, null, 2), "utf8");
+  return payload;
+}
+
+export async function clearStopRequest(context) {
+  await fs.rm(path.join(context.layout.base, STOP_REQUEST_FILE), { force: true });
+}
+
+export async function runLoop(context, options = {}) {
+  const pollMs = (options.pollSeconds ?? context.config.pollSeconds) * 1000;
+  const maxSteps = Number.isInteger(options.maxSteps) ? options.maxSteps : Number.POSITIVE_INFINITY;
+  const history = [];
+  let steps = 0;
+  while (context.run.state === RUN_STATE.RUNNING && steps < maxSteps) {
+    if (options.signal?.aborted) {
+      const outcome = await stopRun(context, TASK_DETAIL.STOPPED, "中断シグナルを受け取りました。");
+      history.push({ action: "run-stopped", detail: outcome });
+      break;
+    }
+    const outcome = await step(context);
+    history.push(outcome);
+    steps += 1;
+    options.onStep?.(outcome);
+    if (outcome.action === "idle" || outcome.action === "waiting") {
+      await sleep(pollMs);
+    }
+  }
+  return { steps, history, run: context.run };
+}
+
+export function statusSnapshot(context) {
+  const parent = context.parent ?? null;
+  return {
+    runId: context.run.runId,
+    state: context.run.state,
+    stopDetail: context.run.stopDetail ?? null,
+    stopMessage: context.run.stopMessage ?? null,
+    repoPath: context.run.repoPath,
+    targetBranch: context.run.targetBranch,
+    targetWorktree: context.run.targetWorktree,
+    baseCommit: context.run.baseCommit,
+    snapshotRevision: context.run.snapshotRevision,
+    createdAt: context.run.createdAt,
+    driverPid: context.run.driverPid ?? null,
+    driverAlive: isProcessAlive(context.run.driverPid),
+    pools: context.run.pools ?? null,
+    summary: summarizeTasks(context.tasks),
+    live: [...context.live.keys()],
+    parent,
+    tasks: context.tasks.map((task) => ({
+      taskId: task.taskId,
+      title: task.title,
+      state: task.state,
+      detail: task.detail ?? null,
+      message: task.message ?? null,
+      dependsOn: task.dependsOn ?? [],
+      attemptCount: task.attemptCount ?? 0,
+      submittedHead: task.submittedHead ?? null,
+      integrationState: task.integration?.state ?? null,
+      integrationId: task.integrationId ?? null,
+      worktree: task.worktree ?? null,
+      branch: task.branch ?? null,
+      question: task.question ?? null,
+    })),
+  };
+}
+
+export async function operationsOf(context) {
+  return listOperationRecords(context.layout);
+}

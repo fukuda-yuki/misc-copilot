@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "lock": {
+    "waitSeconds": 30,
+    "staleMinutes": 30
+  },
+  "verify": [
+    {
+      "name": "unit-tests",
+      "command": "node",
+      "args": ["--test", ".github/extensions/integrate-task/test/*.test.mjs"],
+      "timeoutSeconds": 600
+    }
+  ],
+  "guardPaths": [
+    ".github/integrate-task.policy.json",
+    ".github/extensions/integrate-task/",
+    "AGENTS.md"
+  ]
+}

@@ -56,12 +56,16 @@ driver は AI を呼ばずに担当セッションを起動・回収し、親セ
 共通オプション: --home <dir> --command <copilot> --command-args <arg> --pools <tasks,verify,integration>
                 --timeout <minutes> --poll <seconds> --max-reworks <n>
                 --model <model> --parent-model <model> --task-model <model> --effort <level>
+                --implementer-model <model> --implementer-effort <level>
+                --reviewer-model <model> --reviewer-effort <level>
                 --task-allow-tool <tool> --task-deny-tool <tool>
                 --parent-allow-tool <tool> --parent-deny-tool <tool>
                 --no-default-deny --json
 
 ツール許可は --allow-all / --yolo を使わず、名前で許可する。
-既定は 担当: write, shell(git:*), shell(node:*), shell(npm:*)、親: shell(git:*)。
+既定は 担当: write, shell(git:*), shell(node:*), shell(npm:*), shell(copilot:*)、親: shell(git:*)。
+担当は責任者として copilot workflow run task-pipeline を回すため shell(copilot:*) が要る。
+--implementer-* / --reviewer-* は task-pipeline の役割の既定になる（DISPATCH の payload.roles が優先）。
 既定の拒否: git push / merge / rebase / reset / checkout / switch（統合は driver だけが行う）。`;
 
 function parseArgv(argv) {
@@ -107,6 +111,22 @@ function flagNumber(flags, name, fallback) {
   return value;
 }
 
+function parseRoles(flags) {
+  const roles = {
+    implementer: { model: flagText(flags, "implementer-model", null), reasoningEffort: flagText(flags, "implementer-effort", null) },
+    reviewer: { model: flagText(flags, "reviewer-model", null), reasoningEffort: flagText(flags, "reviewer-effort", null) },
+  };
+  const cleaned = {};
+  for (const [name, role] of Object.entries(roles)) {
+    cleaned[name] = {};
+    for (const [key, value] of Object.entries(role)) {
+      if (value !== null) cleaned[name][key] = value;
+    }
+  }
+  if (Object.keys(cleaned.implementer).length === 0 && Object.keys(cleaned.reviewer).length === 0) return undefined;
+  return cleaned;
+}
+
 function parsePools(flags) {
   const text = flagText(flags, "pools", null);
   if (text === null) return undefined;
@@ -136,6 +156,7 @@ function buildConfig(flags) {
     parentModel: flagText(flags, "parent-model", null),
     taskModel: flagText(flags, "task-model", null),
     effort: flagText(flags, "effort", null),
+    taskRoles: parseRoles(flags),
     parentAllowTools: parentAllow.length > 0 ? parentAllow : undefined,
     parentDenyTools: noDeny ? [] : parentDeny.length > 0 ? parentDeny : undefined,
     taskAllowTools: taskAllow.length > 0 ? taskAllow : undefined,

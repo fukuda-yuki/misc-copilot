@@ -124,6 +124,41 @@ function finish(id) {
   emitJson({ type: "result", sessionId: id, exitCode: 0, usage: { premiumRequests: 0 } });
 }
 
+/** 責任者（担当）のプロンプトに書かれた task-pipeline の入出力パス。 */
+function workflowPaths() {
+  const args = /--args @([^\s]+)/.exec(promptText);
+  const result = /--result-file ([^\s]+)/.exec(promptText);
+  if (args === null || result === null) {
+    throw new Error("責任者のプロンプトに --args / --result-file がありません。");
+  }
+  return { argsFile: args[1], resultFile: result[1] };
+}
+
+/** driver が書いた引数ファイルを読む（読めなければ例外にして気付けるようにする）。 */
+function readWorkflowArgs() {
+  const paths = workflowPaths();
+  return { paths, args: JSON.parse(fs.readFileSync(paths.argsFile, "utf8")) };
+}
+
+/** 実 copilot では `copilot workflow run task-pipeline --result-file` が書く結果ファイル。 */
+function writeWorkflowResult(paths, value) {
+  fs.mkdirSync(path.dirname(paths.resultFile), { recursive: true });
+  fs.writeFileSync(paths.resultFile, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function writeWorkflowResultRaw(paths, text) {
+  fs.mkdirSync(path.dirname(paths.resultFile), { recursive: true });
+  fs.writeFileSync(paths.resultFile, text, "utf8");
+}
+
+/** 提出コミットを作り、そのハッシュを返す。 */
+function commitWork() {
+  fs.writeFileSync(path.join(process.cwd(), `workflow-${process.pid}.txt`), "task-pipeline\n", "utf8");
+  git(["add", "-A"]);
+  git(["commit", "-q", "-m", "task-pipeline の提出"]);
+  return git(["rev-parse", "HEAD"]);
+}
+
 const sessionId = flagValue(["--resume", "--session-id"]) ?? "00000000-0000-4000-8000-000000000000";
 const isParent = promptText.includes("# 並列開発の親セッション");
 const parentMode = resolveParentMode();
@@ -174,6 +209,27 @@ if (isParent) {
         snapshotRevision: revision,
         kind: "DISPATCH",
         payload: { taskId: "t1", title: "担当1", prompt: `作業してください。[[mode=${mode}]]`, dependsOn: [] },
+      }));
+      break;
+    }
+    case "dispatch-workflow": {
+      // 責任者（task-pipeline を回す担当）を役割・検証つきで起動する。
+      const mode = marker(promptText, "task") ?? "workflow-submitted";
+      emitMessage(operationBlock({
+        operationId: "op-dispatch-workflow",
+        snapshotRevision: revision,
+        kind: "DISPATCH",
+        payload: {
+          taskId: "t1",
+          title: "責任者1",
+          prompt: `作業してください。[[mode=${mode}]]`,
+          dependsOn: [],
+          roles: {
+            implementer: { reasoningEffort: "high" },
+            reviewer: { model: "reviewer-model", reasoningEffort: "low" },
+          },
+          verify: [{ name: "fake-verify", command: "node", args: ["-e", "0"] }],
+        },
       }));
       break;
     }
@@ -279,6 +335,8 @@ if (isParent) {
       break;
     }
     case "answer": {
+      // 回答の本文へ、次の担当の振る舞いを混ぜられる（既定は done）。
+      const next = marker(promptText, "answer-mode") ?? "done";
       for (const taskId of tasks) {
         const info = lines.get(taskId);
         if (info?.state !== "NEEDS_PARENT") continue;
@@ -286,7 +344,7 @@ if (isParent) {
           operationId: `op-answer-${taskId}`,
           snapshotRevision: revision,
           kind: "ANSWER",
-          payload: { taskId, answer: "そのまま進めてください。[[mode=done]]" },
+          payload: { taskId, answer: `そのまま進めてください。[[mode=${next}]]` },
         }));
       }
       break;
@@ -362,6 +420,144 @@ if (isParent) {
 
 // 担当としての振る舞い。
 switch (taskMode) {
+  // ここから責任者（task-pipeline を回す担当）の振る舞い。実 copilot では
+  // `copilot workflow run task-pipeline --args @<file> --result-file <file>` が
+  // 結果ファイルを書く。ここではその結果ファイルと、それに従った報告を直接作る。
+  case "workflow-submitted": {
+    const { paths, args } = readWorkflowArgs();
+    const head = commitWork();
+    const verify = { source: "policy", results: [{ name: "pass", command: "node", args: ["-e", "0"], code: 0 }] };
+    writeWorkflowResult(paths, {
+      state: "SUBMITTED",
+      detail: "submitted",
+      message: "提出コミットを作りました。",
+      submittedHead: head,
+      evidenceRef: "evidence/task/t1/000",
+      runId: "11111111-2222-4333-8444-555555555555",
+      taskId: args.taskId,
+      title: args.title,
+      verify,
+      review: { verdict: "approve", model: args.roles?.reviewer?.model ?? null, notes: "問題なし" },
+      committedByWorkflow: true,
+    });
+    writeReport({
+      state: "DONE",
+      summary: "task-pipeline が提出しました",
+      submittedHead: head,
+      tests: verify.results.map((entry) => ({ command: `${entry.command} ${entry.args.join(" ")}`, exitCode: entry.code })),
+      notes: "evidenceRef=evidence/task/t1/000 review=approve",
+    });
+    emitMessage(`task-pipeline が提出コミット ${head} を作りました。`);
+    break;
+  }
+  case "workflow-noreport": {
+    // 結果ファイルだけを書く（報告が無くても提出として受け取れることの確認）。
+    const { paths, args } = readWorkflowArgs();
+    const head = commitWork();
+    writeWorkflowResult(paths, {
+      state: "SUBMITTED",
+      detail: "submitted",
+      message: "提出コミットを作りました。",
+      submittedHead: head,
+      evidenceRef: "evidence/task/t1/001",
+      runId: "22222222-2222-4333-8444-555555555555",
+      taskId: args.taskId,
+      title: args.title,
+      verify: { source: "policy", results: [{ name: "pass", command: "node", args: ["-e", "0"], code: 0 }] },
+      review: { verdict: "approve", model: null, notes: "" },
+    });
+    emitMessage("報告を書かずに終わります。");
+    break;
+  }
+  case "workflow-needs-parent": {
+    const { paths, args } = readWorkflowArgs();
+    writeWorkflowResult(paths, {
+      state: "NEEDS_PARENT",
+      detail: "worktree-dirty",
+      message: "作業ツリーに未コミットの変更が残っています。",
+      submittedHead: null,
+      evidenceRef: null,
+      runId: "33333333-2222-4333-8444-555555555555",
+      taskId: args.taskId,
+      title: args.title,
+    });
+    writeReport({
+      state: "QUESTION",
+      question: "task-pipeline が親の判断を求めています（worktree-dirty）: 作業ツリーに未コミットの変更が残っています。",
+    });
+    emitMessage("task-pipeline が親の判断を求めています。");
+    break;
+  }
+  case "workflow-lying": {
+    // 結果ファイルは親待ちなのに、報告だけ成功に見せる（結果ファイルを優先させる）。
+    const { paths, args } = readWorkflowArgs();
+    writeWorkflowResult(paths, {
+      state: "NEEDS_PARENT",
+      detail: "verify-failed",
+      message: "検証が通りません。",
+      submittedHead: null,
+      evidenceRef: null,
+      runId: "44444444-2222-4333-8444-555555555555",
+      taskId: args.taskId,
+      title: args.title,
+    });
+    writeReport({ state: "DONE", summary: "提出しました", submittedHead: git(["rev-parse", "HEAD"]), tests: [] });
+    emitMessage("結果ファイルと食い違う報告を書きました。");
+    break;
+  }
+  case "workflow-mismatch": {
+    const { paths, args } = readWorkflowArgs();
+    const head = commitWork();
+    writeWorkflowResult(paths, {
+      state: "SUBMITTED",
+      detail: "submitted",
+      message: "提出コミットを作りました。",
+      submittedHead: head,
+      evidenceRef: "evidence/task/t1/002",
+      runId: "55555555-2222-4333-8444-555555555555",
+      taskId: args.taskId,
+      title: args.title,
+      verify: { source: "policy", results: [] },
+      review: { verdict: "approve", model: null, notes: "" },
+    });
+    writeReport({ state: "DONE", summary: "提出しました", submittedHead: "0000000000000000000000000000000000000000", tests: [] });
+    emitMessage("結果ファイルと食い違う submittedHead を報告しました。");
+    break;
+  }
+  case "workflow-corrupt": {
+    const { paths } = readWorkflowArgs();
+    writeWorkflowResultRaw(paths, "{ this is not json");
+    writeReport({ state: "DONE", summary: "提出しました", submittedHead: git(["rev-parse", "HEAD"]), tests: [] });
+    emitMessage("壊れた結果ファイルを書きました。");
+    break;
+  }
+  case "workflow-unknown-state": {
+    const { paths, args } = readWorkflowArgs();
+    writeWorkflowResult(paths, { state: "WEIRD", taskId: args.taskId, title: args.title });
+    writeReport({ state: "DONE", summary: "提出しました", submittedHead: git(["rev-parse", "HEAD"]), tests: [] });
+    emitMessage("知らない state の結果ファイルを書きました。");
+    break;
+  }
+  case "workflow-tests-failed": {
+    // 報告の tests は通っているが、結果ファイルの検証は失敗している。
+    const { paths, args } = readWorkflowArgs();
+    const head = commitWork();
+    writeWorkflowResult(paths, {
+      state: "SUBMITTED",
+      detail: "submitted",
+      message: "提出コミットを作りました。",
+      submittedHead: head,
+      evidenceRef: "evidence/task/t1/003",
+      runId: "66666666-2222-4333-8444-555555555555",
+      taskId: args.taskId,
+      title: args.title,
+      verify: { source: "policy", results: [{ name: "fail", command: "node", args: ["-e", "3"], code: 3 }] },
+      review: { verdict: "approve", model: null, notes: "" },
+    });
+    writeReport({ state: "DONE", summary: "提出しました", submittedHead: head, tests: [{ command: "node -e 0", exitCode: 0 }] });
+    emitMessage("検証が失敗した結果ファイルを書きました。");
+    break;
+  }
   case "done": {
     const name = `work-${process.pid}-${Date.now()}.txt`;
     fs.writeFileSync(path.join(process.cwd(), name), "done\n", "utf8");

@@ -16,6 +16,18 @@ import { readParent, writeParent } from "./store.mjs";
 
 const PARENT_ATTENTION_STATES = new Set([TASK_STATE.BLOCKED, TASK_STATE.INTERRUPTED, TASK_STATE.STALE_TARGET]);
 
+/** 役割の指定を 1 行にまとめる（未指定は省略）。 */
+function describeRoles(roles) {
+  const parts = [];
+  for (const name of ["implementer", "reviewer"]) {
+    const role = roles?.[name];
+    if (role === null || typeof role !== "object") continue;
+    const values = [role.model, role.reasoningEffort].filter((value) => typeof value === "string" && value !== "");
+    if (values.length > 0) parts.push(`${name}=${values.join("/")}`);
+  }
+  return parts.length === 0 ? "(既定)" : parts.join(" ");
+}
+
 function buildParentPrompt(context, presented, attention = parentAttention(context)) {
   const run = context.run;
   const lines = [];
@@ -43,6 +55,8 @@ function buildParentPrompt(context, presented, attention = parentAttention(conte
       if (task.integration?.state) parts.push(`統合=${task.integration.state}`);
       if ((task.dependsOn ?? []).length > 0) parts.push(`依存=${task.dependsOn.join(",")}`);
       if (task.attemptCount) parts.push(`試行=${task.attemptCount}`);
+      if (task.roles) parts.push(`役割=${describeRoles(task.roles)}`);
+      if (Array.isArray(task.verify) && task.verify.length > 0) parts.push(`検証=${task.verify.map((entry) => entry.name).join(",")}`);
       lines.push(parts.join(" "));
       if (task.message) lines.push(`  理由: ${task.message}`);
       if (task.question) lines.push(`  質問: ${task.question}`);
@@ -66,6 +80,22 @@ function buildParentPrompt(context, presented, attention = parentAttention(conte
   lines.push("- CHECK_MERGE が VERIFIED_NOT_PUBLISHED を返したときだけ APPLY_MERGE を出す。");
   lines.push("- 全タスクが INTEGRATED になったら FINISH を出す。");
   lines.push("- 人間の判断が要るなら REQUEST_HUMAN を出して止める。");
+  lines.push("");
+  lines.push("## 担当の動かし方");
+  lines.push("");
+  lines.push("担当（責任者）は実装しません。担当は自分の作業ツリーで `copilot workflow run task-pipeline` を 1 回回し、");
+  lines.push("実装・検証・レビュー・修正・提出コミットはそのワークフローが行います。driver が読むのは結果ファイルだけです。");
+  lines.push("");
+  lines.push("- 1 つの DISPATCH は、1 人で完結できる作業単位にしてください。");
+  lines.push("  prompt には「何を満たせば終わりか」（受入条件）と、触ってよい範囲を書きます。");
+  lines.push("- 作業の分割はファイルや層ではなく、独立に検証できる単位で切ります。");
+  lines.push("  同じファイルを 2 つの担当に同時に触らせないでください（統合で衝突します）。");
+  lines.push("- payload.roles で実装役とレビュー役のモデルを指定できます（implementer / reviewer の model, reasoningEffort）。");
+  lines.push("  難所は強いモデル、単純作業は軽いモデル、というように割り当ててください。");
+  lines.push("- payload.verify で検証コマンドを指定できます（name, command, args, timeoutSeconds）。");
+  lines.push("  省略するとポリシー（.github/integrate-task.policy.json）の検証が使われます。");
+  lines.push("- 担当が質問（NEEDS_PARENT）で返してきたら、その質問に答えるのが親の仕事です。");
+  lines.push("  実装の代行や、担当の作業ツリーの後片付けはしません。");
   lines.push("");
   lines.push(protocolInstructions({ snapshotRevision: presented, taskIds: context.tasks.map((task) => task.taskId) }));
   return lines.join("\n");

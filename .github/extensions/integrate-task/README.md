@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | Copilot App（親セッション＝オーケストレーター） | スキル `.github/skills/parallel-dev-orchestration/SKILL.md` とワークフロー `integrate-task` | 作業単位を決め、子セッションへ割り当て、提出を 1 件ずつ統合し、最終レビューと PR まで進める |
 | Copilot App（子セッション） | `.github/extensions/integrate-task/extension.mjs`（ワークフロー `task-pipeline`） | 専用 worktree／専用ブランチで 実装 → 検証 → レビュー → 修正 → 提出コミット |
-| CLI | `driver/cli.mjs`（AI を呼ばない常駐 driver） | 非対話で起動した親セッション（`--prompt` + `--output-format=json`）が提案する操作の適用 |
+| CLI | `driver/cli.mjs`（AI を呼ばない常駐 driver） | 非対話で起動した親セッション（`--prompt` + `--output-format=json`）が提案する操作の適用。担当（子）は**責任者**として `copilot workflow run task-pipeline` を回す |
 
 - 実装: プレーンな ESM（`.mjs`）。ビルドも npm 依存もありません。
 - 統合の判断（受付の検証・候補の作成・ff-only 公開）は `integrate/engine.mjs` が正本で、
@@ -42,10 +42,18 @@ driver（`driver/`）は AI を呼びません。担当セッションの起動�
 親から届いた操作提案の適用だけを行います。
 
 - 担当（task）: 1 タスク = 1 作業ツリー。`driver` が作業ツリーの作成・削除を一括して持ちます。
-  担当は自分の作業ツリーで実装し、`.agent-run/report.json` に `submittedHead` を書きます。
-- 回収: 終了コード 0 を成功とみなしません。報告の `submittedHead` と作業ツリー HEAD の一致、
-  未コミット変更の有無、ベースからの新規コミット、検証コマンドの終了コードを個別に確認します。
-  分類できない出力は `NEEDS_PARENT` / `NEEDS_HUMAN`（`unclassified-output`）へ回します。
+  担当（子セッション）は **責任者** として、自分の作業ツリーで `copilot workflow run task-pipeline` を回し、
+  実装 → 検証 → レビュー → 修正ループ → 提出コミットまでを工程（`task/`）に任せます。工程は CLI 用に
+  複製しません。driver は args ファイル `<worktree>/.agent-run/<attemptId>.task.json` とプロンプト
+  `<worktree>/.agent-run/<attemptId>.prompt.md` を置き、責任者に
+  `copilot workflow run task-pipeline --args @<args> --result-file <worktree>/.agent-run/<attemptId>.task-result.json --silent --output-format json`
+  を実行させます。実装役・レビュー役は `--implementer-model` / `--implementer-effort` / `--reviewer-model` /
+  `--reviewer-effort` が既定になり、親の DISPATCH の `roles` / `verify` が優先します。args は実行前に
+  `argsSchema` で検査し、合わなければ担当を起こさずに止めます。
+- 回収: 終了コード 0 を成功とみなしません。結果ファイル（workflow result）の `state` / `submittedHead` を
+  先に読み、無ければ `.agent-run/report.json`、最後に終了コードの順で分類します。報告の `submittedHead` と
+  作業ツリー HEAD の一致、未コミット変更の有無、ベースからの新規コミット、検証コマンドの終了コードを
+  個別に確認し、分類できない出力は `NEEDS_PARENT` / `NEEDS_HUMAN`（`unclassified-output`）へ回します。
 - 親: 非対話 CLI（`-p` / `--output-format=json` / `--no-ask-user`）として 1 ターンずつ起動し、
   返答中の ```agent-operation フェンスの JSON だけを受け付けます（文章中のコマンドは実行しません）。
   操作は `DISPATCH` / `ANSWER` / `REWORK` / `CHECK_MERGE` / `APPLY_MERGE` / `REQUEST_HUMAN` / `FINISH` です。
@@ -53,6 +61,32 @@ driver（`driver/`）は AI を呼びません。担当セッションの起動�
 - 停止: 未統合のタスクが残っている `FINISH` は受け付けません。`stop` は実行中の担当を止めてから止まります。
 - セッション消失: 同じ UUID で空セッションを作り直して「再開成功」にはしません。
   `--resume` が使えない場合は `NEEDS_HUMAN`（`session-lost`）へ回します。
+
+### 責任者を CLI で回すときの制約（実測）
+
+責任者 + `task-pipeline` の経路は実装・テスト済みですが、実 copilot での実走では**提出まで到達しません**。
+原因は driver ではなく CLI の権限モデルです（実測は「実測したこと」の段階 D）。
+実走は `NEEDS_PARENT` → `REWORK` → `NEEDS_PARENT` → `request-human` と進み、driver は
+`state=STOPPED` / `stopDetail=human-requested`（終了コード 3）で停止しました。
+
+- `task-pipeline` の実装役は `ctx.agent` が起こす subagent で、**ファイルを書くツールを持ちません**
+  （実測: subagent 自身の報告「Write/apply_patch tool is not exposed in this subagent」、
+  そのセッションに `apply_patch` の要求が 0 件）。
+- 実装役がシェルで書こうとすると拒否されます（実測: `node -e` での書き込み、`git hash-object -w --stdin`、
+  `git checkout-index --all`、`git cat-file -e` が `denied-no-approval-rule-and-could-not-request-from-user`）。
+  `copilot help permissions` は `write(path?)` が「シェルツールの起動を除く」ファイル変更ツールに一致すること、
+  シェルリダイレクトを許可するには `--allow-all-tools` が要ることを明記しています。
+- 参考（同じ `task-pipeline` を対話セッションの文脈で実行した probe、`%TEMP%\integrate-task-probe`）: 実装役は
+  まず `Set-Content -Path '.\probe.txt' …` を試して拒否され（段階 D と同じ `denied-no-approval-rule-…`）、
+  次に `[System.IO.File]::WriteAllText(...)` を実行しています。こちらは `permission.requested` が発生せず
+  （`hook.start` → `tool.execution_complete success=true` のみ）そのまま通り、`SUBMITTED` に到達しました。
+  つまり「シェルだから常に拒否」ではなく、コマンドごとの分類で結果が変わります（`Set-Content` /
+  `node -e …writeFileSync` / `git hash-object -w --stdin` は拒否、`WriteAllText` は素通り）。
+  この差は実行状況と CLI の分類に依存するため、実装役が書けることを前提にした設計は避けています。
+- したがって `--allow-all` を使わない方針のままでは、実装役はファイルを作れません。許可を広げれば
+  任意のコマンドが通るため、`--deny-tool` の `git push` などをすり抜ける余地が生まれます（**未検証**）。
+  driver は既定で許可を広げず、実装役のプロンプトに「この実行で使えるツール」を書いて止めます。
+  `docs/CLI-ENTRY.md` の段階 5（実 copilot 実走）はこの実測で止まっています。
 
 ## ファイル構成
 
@@ -91,6 +125,8 @@ driver/               CLI 限定の常駐 driver（プロセス起動・イベ�
   pools.mjs           実行枠と依存関係から、次に起こす担当を決める
   state.mjs           driver の状態 enum・遷移・taskId の検証
   store.mjs           実行レイアウトと run/task/attempt の記録（書き込みは直列化）
+docs/
+  CLI-ENTRY.md        CLI 入口で子の工程（task-pipeline）を回す実装の指示書（実装済み。実走は権限モデルで停止）
 test/                 一時リポジトリと fake copilot を使ったテスト
   fake-copilot.mjs    実測した JSONL をまねる差し替え用 copilot（担当 14 種・親 17 種の振る舞い）
 ```
@@ -314,12 +350,29 @@ driver は同じホームの下に実行ごとの記録を置きます（`--home
   `src/greeting.txt` は `hello` の 1 行。担当の 2 回目の試行は 1 回目と同じセッションを `--resume` で
   再開した。1 回目の実行が `--max-steps` で切れた後、`resume` が試行を `INTERRUPTED` として記録し、
   親が REWORK を出して復帰した（復旧の実測）。
+- 段階 C（CLI からのワークフロー実行）: `copilot workflow run` は CLI のコマンドとして存在し（`list` は無い）、
+  **CLI 単体でも `.github/extensions/` のワークフローを実行できる**ことを実走で確認した。
+  `copilot workflow run integrate-task --args '{"operationId":"probe-nonexistent","mode":"check"}' --result-file <path> --silent --output-format json`
+  は stdout に `workflow.result`（runId・status）を出し、result ファイルに `{"state":"NEEDS_PARENT","detail":"operation-not-found"}` を書いた。
+  `task-pipeline` に必須引数を欠いた args を渡すと、宣言した `argsSchema` で実行前に拒否された（result ファイルは作られない）。
+- 段階 D（責任者 + `task-pipeline` の実走、2026-10-18）: 一時リポジトリ（runId `72f5691a-4a68-4ba2-8856-3ae89b12eedc`）で
+  driver を実走した。子セッション（責任者）は `copilot workflow run task-pipeline` を実行し、`ctx.agent` が実装役の subagent
+  （`agentType: general-purpose`、`executionMode: background`）を起動した。`roles: {}` と `commitMessage: null`
+  を含む args は CLI の事前検査で拒否された（exit 2）ため、driver は空の役割を落として組み立て直し、
+  実行前検査（`checkWorkflowArgs`）を追加した。実装役はファイルを作成できず、試行 `task-001-a1` は
+  `NEEDS_PARENT` / `question`（提出コミット無し・作業ツリーは変更なし）で終わり、親は `REWORK` を出した。
+  2 回目の試行 `task-001-a2` も同じ理由で `NEEDS_PARENT` / `question` となり、親は
+  `request-human` を出し、driver は `state=STOPPED` / `stopDetail=human-requested`（終了コード 3）で停止した。
+  driver は各試行を回収し、責任者の結果ファイルから `state` を読んで分類した。
+  原因は上記「責任者を CLI で回すときの制約（実測）」。実走の生ログは `files/phase5-evidence/`（セッション記録）に退避した。
 - 未実施（この環境で実測していないこと）:
+  - CLI 入口での**提出までの完走**（実走は行ったが、上記の権限モデルで `SUBMITTED` に至っていない）。
+    受入条件は弱めず、未達のまま記録している（`.github/extensions/integrate-task/docs/CLI-ENTRY.md` の段階5）。
   - 実 copilot での 2 タスク同時実行と、質問待ち（ANSWER）からの再開。
   - 実 copilot での異常系（権限拒否・時間切れ・セッション消失）。
     これらは差し替え用 copilot を使ったテストで確認している（下記）。
-  - `copilot` CLI 単体が `.github/extensions/` を読むかどうか（App からの実行は確認済み）。
-  - `task-pipeline` の実 copilot での実走（差し替え `ctx` のテストのみ）。
+  - より広い許可（`--task-allow-tool shell` や `--allow-all-tools`）で実装役が書けるかどうか。
+    方針として使わないため、driver のテストでも確認していない。
   - 子セッションの worktree で `extensions_reload` が効くかどうか（未検証）。
 
 ## テスト
@@ -330,8 +383,9 @@ node --test .github/extensions/integrate-task/test/*.test.mjs
 
 一時リポジトリと、実測した JSONL をまねる差し替え用 copilot（`test/fake-copilot.mjs`）で
 実際にプロセスを起動して検証します。テストは `copilot` 本体を呼びません。
-101 件 pass（41.6 秒、Windows / node v24.15.0、2026-10-16 実測）を確認しています。
-`task-pipeline` は `ctx` を差し替えて呼ぶ 12 件を含みます。
+110 件 pass（46.6 秒、Windows / node v24.15.0、2026-10-18 実測）を確認しています。
+内訳は `task-pipeline`（`ctx` を差し替えて呼ぶ 12 件）と、責任者 + `task-pipeline` の経路
+（args ファイル・結果ファイルの受け渡しと分類）の `test/driver-workflow.test.mjs` 9 件を含みます。
 
 ## 注意
 

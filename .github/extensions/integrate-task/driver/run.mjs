@@ -46,6 +46,8 @@ export function defaultConfig(overrides = {}) {
     parentModel: overrides.parentModel ?? null,
     taskModel: overrides.taskModel ?? null,
     effort: overrides.effort ?? null,
+    // task-pipeline の実装役・レビュー役。CLI のフラグか DISPATCH の payload.roles で指定する。
+    taskRoles: overrides.taskRoles ?? null,
     parentAllowTools: overrides.parentAllowTools ?? [...DEFAULT_PARENT_ALLOW_TOOLS],
     parentDenyTools: overrides.parentDenyTools ?? [...DEFAULT_DENY_TOOLS],
     taskAllowTools: overrides.taskAllowTools ?? [...DEFAULT_TASK_ALLOW_TOOLS],
@@ -77,6 +79,8 @@ export async function initRun(config, input = {}) {
     baseCommit,
     pools: config.pools,
     timeoutMinutes: config.timeoutMinutes,
+    // 実装役・レビュー役の既定（DISPATCH の payload.roles が優先）。
+    taskRoles: config.taskRoles,
     toolPolicy: {
       parentAllow: config.parentAllowTools,
       parentDeny: config.parentDenyTools,

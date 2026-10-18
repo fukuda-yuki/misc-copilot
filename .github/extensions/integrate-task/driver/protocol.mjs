@@ -1,6 +1,7 @@
 // 親セッションからの操作提案。文章中のコマンドを実行せず、JSON ブロックだけを検証して受け付ける。
 
 import { OPERATION_ID_PATTERN } from "../core/state.mjs";
+import { validateRoles, validateVerify } from "../task/state.mjs";
 import { assertTaskId } from "./state.mjs";
 
 export const OPERATION_KIND = Object.freeze({
@@ -79,6 +80,9 @@ export function validateOperation(value, options = {}) {
           prompt: requireString(body.prompt, "payload.prompt"),
           dependsOn: Array.isArray(body.dependsOn) ? body.dependsOn.map((item) => assertTaskId(item)) : [],
           base: optionalString(body.base, "payload.base", 200),
+          // 実装役・レビュー役は task-pipeline の引数としてそのまま渡す（task/state.mjs と同じ検証）。
+          roles: body.roles === undefined || body.roles === null ? null : validateRoles(body.roles),
+          verify: body.verify === undefined || body.verify === null ? null : validateVerify(body.verify),
         };
         break;
       }
@@ -262,6 +266,9 @@ export function protocolInstructions(options = {}) {
     "",
     "kind は次のいずれかです。",
     "- DISPATCH: 新しい担当を起動する。payload.title, payload.prompt が必須。payload.dependsOn に先行 taskId を並べる。",
+    "  payload.roles に実装役とレビュー役のモデル（implementer / reviewer の model と reasoningEffort）、",
+    "  payload.verify に検証コマンドの配列（name, command, args, timeoutSeconds）を指定できる。",
+    "  どちらも省略すると driver の既定（またはポリシー）で動く。",
     "- ANSWER: 質問待ちの担当へ回答して再開する。payload.taskId, payload.answer が必須。",
     "- REWORK: 提出を差し戻して作り直させる。payload.taskId, payload.instruction が必須。",
     "- CHECK_MERGE: 提出を検証する（統合候補の作成と検証まで）。payload.taskId が必須。",

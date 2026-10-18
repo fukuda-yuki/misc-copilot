@@ -36,6 +36,11 @@
 | 共通の短いルール | `AGENTS.md` |
 | 並列開発の手順 | `.github/skills/parallel-dev-orchestration/SKILL.md` |
 
+CLI 入口（driver の子プロセスを責任者にして `task-pipeline` を回す）は**実装済み**です
+（`.github/extensions/integrate-task/docs/CLI-ENTRY.md`）。ただし実 copilot の実走は、実装役 subagent が
+ファイルを書けない（CLI の権限モデル）ため**提出に到達していません**。未達のまま記録しています
+（同文書の「8.1 実測の記録」と `.github/extensions/integrate-task/README.md`）。
+
 ## 3. 前提（着手前に実測して記録する）
 
 | 項目 | 期待 | 実測方法 |

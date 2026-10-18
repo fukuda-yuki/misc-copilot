@@ -32,7 +32,7 @@ const ALLOWED_KEYS = ["taskId", "title", "prompt", "roles", "verify", "maxRework
 const ROLE_NAMES = ["implementer", "reviewer"];
 const ROLE_KEYS = ["model", "reasoningEffort"];
 
-function validateRoles(value) {
+export function validateRoles(value) {
   const roles = {};
   for (const name of ROLE_NAMES) {
     roles[name] = {};
@@ -70,7 +70,7 @@ function validateRoles(value) {
  * verify を指定したときはポリシーの検証コマンドを置き換える。
  * 形はポリシー（core/policy.mjs）と同じにして、同じ実装（core/verify.mjs）で走らせる。
  */
-function validateVerify(value) {
+export function validateVerify(value) {
   if (value === undefined) return null;
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error("verify は 1 件以上の配列で指定してください。");

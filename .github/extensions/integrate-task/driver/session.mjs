@@ -18,8 +18,10 @@ export class CapabilityError extends Error {
  * 必要なものだけを名前で許可する（実測: `write` は apply_patch、`shell(node:*)` は
  * shell ツールの node 実行を許可し、それ以外は `code: "denied"` で拒否される）。
  * 統合先への push / merge / rebase / reset は担当にも親にも許可しない。
+ * `shell(copilot:*)` は担当（責任者）が `copilot workflow run task-pipeline` を
+ * 実行するために必要（実測: これが無いと CLI 実行が拒否される）。
  */
-export const DEFAULT_TASK_ALLOW_TOOLS = Object.freeze(["write", "shell(git:*)", "shell(node:*)", "shell(npm:*)"]);
+export const DEFAULT_TASK_ALLOW_TOOLS = Object.freeze(["write", "shell(git:*)", "shell(node:*)", "shell(npm:*)", "shell(copilot:*)"]);
 export const DEFAULT_PARENT_ALLOW_TOOLS = Object.freeze(["shell(git:*)"]);
 export const DEFAULT_DENY_TOOLS = Object.freeze([
   "shell(git push)",

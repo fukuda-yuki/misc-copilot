@@ -79,6 +79,8 @@ export async function applyOperation(context, operation) {
         prompt: operation.payload.prompt,
         dependsOn: operation.payload.dependsOn,
         base: operation.payload.base ?? null,
+        roles: operation.payload.roles ?? null,
+        verify: operation.payload.verify ?? null,
         state: TASK_STATE.PLANNED,
         detail: null,
         message: null,

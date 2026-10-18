@@ -4,12 +4,21 @@ import path from "node:path";
 
 import { TASK_DETAIL, TASK_STATE } from "./state.mjs";
 
-export const REPORT_RELATIVE_PATH = ".agent-run/report.json";
+export const AGENT_RUN_DIR = ".agent-run";
+export const REPORT_RELATIVE_PATH = `${AGENT_RUN_DIR}/report.json`;
 export const REPORT_STATE = Object.freeze({
   DONE: "DONE",
   QUESTION: "QUESTION",
   BLOCKED: "BLOCKED",
   FAILED: "FAILED",
+});
+
+// 担当（責任者）が回すワークフロー名。実装・検証・レビュー・提出コミットは
+// このワークフローが行い、driver はその結果ファイルだけを読む。
+export const TASK_WORKFLOW_NAME = "task-pipeline";
+export const WORKFLOW_STATE = Object.freeze({
+  SUBMITTED: "SUBMITTED",
+  NEEDS_PARENT: "NEEDS_PARENT",
 });
 
 // 出力本文からの推測。状態判定の根拠には使わず、理由の補助にだけ使う。
@@ -40,6 +49,50 @@ export function reportPath(worktreePath) {
   return path.join(worktreePath, REPORT_RELATIVE_PATH);
 }
 
+/** 担当（責任者）へ渡す task-pipeline の引数ファイル。driver が書く。 */
+export function workflowArgsPath(worktreePath, attemptId) {
+  return path.join(worktreePath, AGENT_RUN_DIR, `${attemptId}.task.json`);
+}
+
+/** task-pipeline が書く結果ファイル。driver はこれを読んで提出を判定する。 */
+export function workflowResultPath(worktreePath, attemptId) {
+  return path.join(worktreePath, AGENT_RUN_DIR, `${attemptId}.task-result.json`);
+}
+
+/**
+ * 結果ファイルを読む。無ければ present=false、壊れていれば parseError を返す。
+ * 存在しないことと壊れていることを区別する（未実施を成功扱いしない）。
+ */
+export async function readWorkflowResult(worktreePath, attemptId) {
+  const file = workflowResultPath(worktreePath, attemptId);
+  let rawText = null;
+  try {
+    rawText = await fs.readFile(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return { present: false, file, value: null, rawText: null, parseError: null };
+    throw error;
+  }
+  try {
+    return { present: true, file, value: JSON.parse(rawText), rawText, parseError: null };
+  } catch (error) {
+    return { present: true, file, value: null, rawText, parseError: error.message };
+  }
+}
+
+/** 結果ファイルの verify.results を、報告の tests と同じ形へ寄せる。 */
+export function workflowTests(value) {
+  const results = value?.verify?.results;
+  if (!Array.isArray(results)) return [];
+  return results.map((entry) => {
+    const parts = [entry?.command, ...(Array.isArray(entry?.args) ? entry.args : [])].filter((part) => typeof part === "string" && part !== "");
+    return {
+      command: parts.length > 0 ? parts.join(" ") : String(entry?.name ?? "unknown"),
+      exitCode: Number.isInteger(entry?.code) ? entry.code : null,
+      name: typeof entry?.name === "string" ? entry.name : null,
+    };
+  });
+}
+
 export async function readReport(worktreePath) {
   const file = reportPath(worktreePath);
   let rawText = null;
@@ -57,9 +110,12 @@ export async function readReport(worktreePath) {
   }
 }
 
-function classifyDone(context) {
-  const { report, git } = context;
-  const declaredHead = typeof report.value.submittedHead === "string" ? report.value.submittedHead.trim() : "";
+/**
+ * 提出の申告（submittedHead）と Git の実測を突き合わせる。
+ * 申告は報告ファイルからでも結果ファイルからでもよい。
+ */
+function classifySubmission(context, declaredHead, tests) {
+  const { git } = context;
   if (declaredHead === "") {
     return { state: TASK_STATE.NEEDS_HUMAN, detail: TASK_DETAIL.SUBMITTED_HEAD_MISSING, message: "報告に submittedHead がありません。" };
   }
@@ -79,7 +135,6 @@ function classifyDone(context) {
   if (git.head === git.baseCommit) {
     return { state: TASK_STATE.NEEDS_HUMAN, detail: TASK_DETAIL.NO_NEW_COMMITS, message: "ベースから新しいコミットがありません。" };
   }
-  const tests = Array.isArray(report.value.tests) ? report.value.tests : [];
   const failed = tests.filter((entry) => Number(entry?.exitCode ?? 0) !== 0);
   if (failed.length > 0) {
     return {
@@ -97,12 +152,60 @@ function classifyDone(context) {
 }
 
 /**
+ * 結果ファイル（task-pipeline）からの分類。無ければ null。
+ * 実装・検証・レビューはワークフローが済ませているので、driver は
+ * 申告された提出コミットを Git の実測と突き合わせるだけでよい。
+ */
+function classifyFromWorkflow(context, workflow) {
+  if (!workflow.present) return null;
+  if (workflow.value === null) {
+    return {
+      state: TASK_STATE.NEEDS_HUMAN,
+      detail: TASK_DETAIL.REPORT_INVALID,
+      message: `結果ファイルを JSON として読めません: ${workflow.parseError ?? "unknown"}`,
+    };
+  }
+  const state = workflow.value.state;
+  if (state === WORKFLOW_STATE.SUBMITTED) {
+    const declaredHead = typeof workflow.value.submittedHead === "string" ? workflow.value.submittedHead.trim() : "";
+    const declared = context.report.value;
+    const reportHead = typeof declared?.submittedHead === "string" ? declared.submittedHead.trim() : "";
+    if (declared?.state === REPORT_STATE.DONE && reportHead !== "" && reportHead !== declaredHead) {
+      return {
+        state: TASK_STATE.NEEDS_HUMAN,
+        detail: TASK_DETAIL.SUBMITTED_HEAD_MISMATCH,
+        message: `報告の submittedHead (${reportHead}) と結果ファイルの submittedHead (${declaredHead}) が一致しません。`,
+      };
+    }
+    return classifySubmission(context, declaredHead, workflowTests(workflow.value));
+  }
+  if (state === WORKFLOW_STATE.NEEDS_PARENT) {
+    const detail = typeof workflow.value.detail === "string" ? workflow.value.detail : "unknown";
+    const message = typeof workflow.value.message === "string" ? workflow.value.message.trim() : "";
+    return {
+      state: TASK_STATE.NEEDS_PARENT,
+      detail: TASK_DETAIL.QUESTION,
+      message: "task-pipeline が親の判断を求めています。",
+      question: [`task-pipeline が親の判断を求めています（${detail}）。`, message].filter((line) => line !== "").join("\n"),
+    };
+  }
+  return {
+    state: TASK_STATE.NEEDS_HUMAN,
+    detail: TASK_DETAIL.REPORT_INVALID,
+    message: `結果ファイルの state が不正です: ${String(state)}`,
+  };
+}
+
+/**
  * 試行の結果を分類する。終了コード 0 を成功として扱わない。
- * 判断材料は報告ファイルと Git の実測だけで、出力本文は補助に留める。
+ * 判断材料は結果ファイル・報告ファイルと Git の実測だけで、出力本文は補助に留める。
+ * 責任者が回した task-pipeline の結果ファイルがあれば、そちらを優先する。
  */
 export function classifyAttempt(context) {
-  const { attempt, report, git, outputText = "" } = context;
+  const { attempt, report, git, outputText = "", workflow = null } = context;
   const permissionHint = looksLikePermissionDenial(outputText);
+  const workflowValue = workflow?.value ?? null;
+  const reportTests = Array.isArray(report.value?.tests) ? report.value.tests : [];
   const base = {
     attemptId: attempt.attemptId,
     taskId: attempt.taskId,
@@ -111,20 +214,29 @@ export function classifyAttempt(context) {
     permissionHint,
     reportHash: report.hash ?? null,
     reportFile: report.file ?? null,
-    tests: Array.isArray(report.value?.tests) ? report.value.tests : [],
+    workflowFile: workflow?.file ?? null,
+    workflowState: typeof workflowValue?.state === "string" ? workflowValue.state : null,
+    workflowDetail: typeof workflowValue?.detail === "string" ? workflowValue.detail : null,
+    workflowRunId: typeof workflowValue?.runId === "string" ? workflowValue.runId : null,
+    workflowEvidenceRef: typeof workflowValue?.evidenceRef === "string" ? workflowValue.evidenceRef : null,
+    workflowVerify: workflowValue?.verify ?? null,
+    workflowReview: workflowValue?.review ?? null,
+    tests: workflowValue === null ? reportTests : workflowTests(workflowValue),
     summary: typeof report.value?.summary === "string" ? report.value.summary : null,
   };
 
   if (attempt.timedOut === true) {
     return { ...base, state: TASK_STATE.INTERRUPTED, detail: TASK_DETAIL.TIMEOUT, message: "制限時間を超えたため停止しました。提出は未確認です。" };
   }
+  const fromWorkflow = workflow === null ? null : classifyFromWorkflow(context, workflow);
+  if (fromWorkflow !== null) return { ...base, ...fromWorkflow };
   if (!report.present) {
     if (attempt.exitCode === 0) {
       return {
         ...base,
         state: TASK_STATE.NEEDS_HUMAN,
         detail: TASK_DETAIL.UNCLASSIFIED_OUTPUT,
-        message: "終了コードは 0 ですが、報告ファイルがありません。成功とは扱いません。",
+        message: "終了コードは 0 ですが、報告ファイルと結果ファイルがありません。成功とは扱いません。",
       };
     }
     return {
@@ -143,8 +255,10 @@ export function classifyAttempt(context) {
   }
 
   switch (declared.state) {
-    case REPORT_STATE.DONE:
-      return { ...base, ...classifyDone(context) };
+    case REPORT_STATE.DONE: {
+      const declaredHead = typeof declared.submittedHead === "string" ? declared.submittedHead.trim() : "";
+      return { ...base, ...classifySubmission(context, declaredHead, reportTests) };
+    }
     case REPORT_STATE.QUESTION: {
       const question = typeof declared.question === "string" ? declared.question.trim() : "";
       if (question === "") {

@@ -43,21 +43,69 @@ AIが「古いC#のWebアプリ」を調査し、計画を立て、現在の.NET
 **使わないもの**：Docker、コンテナー、SQL Server、SQL Server LocalDB、Azure。
 インメモリDBだけで動かして完成とはしません。
 
-## 開始地点と、次のAIへの指示
+## 開始地点
 
-- 開始ブランチ：`demo/00-legacy-v2`
-- 開始タグ：`demo/start-v2`（注釈付きタグ）
-- 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`（`demo/00-legacy-v2` と `demo/start-v2` が指すコミット）
-- 実行用の指示書：[docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md)
-
-新しいAIセッション（前の会話を引き継がないセッション）へは、次の短い指示だけを渡します。
-
-> このリポジトリの docs/demo/START-MODERNIZE.md を読み、記載された移行を実施してください。
-> 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`
+| 項目 | 値 |
+| --- | --- |
+| 開始ブランチ | `demo/00-legacy-v2` |
+| 開始タグ | `demo/start-v2`（注釈付きタグ） |
+| 開始コミット | `cb90026f0a7692241544ea7c106cec5327ade630`（ブランチとタグが指すコミット） |
+| 実行用の指示書 | [docs/demo/START-MODERNIZE.md](docs/demo/START-MODERNIZE.md) |
 
 開始地点は固定です。開始ブランチを checkout して直接作業を続けたり、
 開始タグを新しいコミットへ動かしたりしません。
-旧い開始地点（`demo/00-legacy` / `demo/start-v1`）は、文書を整理する前の状態として残しています。
+
+旧い開始地点（`demo/00-legacy` / `demo/start-v1`）のrefは、ref整理で削除しました
+（コミット `830d46e` は `main` の履歴に残っています）。
+開始地点の文書には「旧い開始地点を残している」と書かれていますが、その後refを削除したものです。
+
+## 実装を始めるときの手順
+
+移行の実装は、**このリポジトリの作業ツリーでは行いません**。
+開始地点を clone した別のフォルダで、新しいAIセッションを動かします。
+
+1. 開始地点を、隣のフォルダへ clone する。
+
+   ```
+   git clone --single-branch --branch demo/00-legacy-v2 --no-tags git@github.com:fukuda-yuki/misc-copilot.git ../misc-copilot-run01
+   ```
+
+   - SSH が使えない環境では、`git@github.com:fukuda-yuki/misc-copilot.git` を
+     `https://github.com/fukuda-yuki/misc-copilot.git` に読み替えます。
+   - `--no-tags` を付けているため開始タグは取得されませんが、`HEAD` は開始コミットを指します。
+
+2. clone したフォルダで、`HEAD` が開始コミットと一致することを確認する。
+
+   ```
+   cd ../misc-copilot-run01
+   git rev-parse HEAD
+   # cb90026f0a7692241544ea7c106cec5327ade630 と一致すること
+   ```
+
+3. **新しいAIセッション**（前の会話を引き継がないセッション）をそのフォルダで開始し、
+   次の短い指示だけを渡す。
+
+   > このリポジトリの docs/demo/START-MODERNIZE.md を読み、記載された移行を実施してください。
+   > 開始コミット：`cb90026f0a7692241544ea7c106cec5327ade630`
+
+4. 実行AIは `feat/modernize-run01` を作業ブランチにし、段階ごとに `demo/run01/01-assessment` 〜
+   `demo/run01/04-verified` を打ちます。記録は clone 内の `docs/demo/runs/run01/` に残ります。
+
+実行ごとに**新しいフォルダ・新しいAIセッション・専用DB**を組み合わせ、run番号を新しくします（`run02`、`run03`…）。
+実行AIは `main` へ merge せず、PR の base には `demo/00-legacy-v2` を使います。
+
+## ブランチとタグの構成
+
+| ref | 種類 | 用途 | 動かすか |
+| --- | --- | --- | --- |
+| `main` | ブランチ | 人間向けの現在地（このREADMEと文書） | 更新してよい |
+| `demo/00-legacy-v2` | ブランチ | 移行の開始地点（clone 元） | 固定 |
+| `demo/start-v2` | タグ（注釈付き） | 開始地点の目印（`demo/00-legacy-v2` と同一コミット） | 固定 |
+| `feat/modernize-run01` | ブランチ | 実行AIの作業ブランチ（実行時に作る） | 実行中は進む |
+| `demo/run01/01-assessment` 〜 `04-verified` | ブランチ | 各段階の保存点（実行時に作る） | 固定 |
+
+- この表は、この移行デモで使うrefだけを載せています。
+- 準備段階で使ったブランチ（`feat/prepare-modernize-demo`、`feat/trim-prep-docs`）は削除しました。
 
 ## ドキュメント
 
